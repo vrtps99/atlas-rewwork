@@ -64854,8 +64854,7 @@ which bees and get all 3 targets if
 			faceFolder.AddSwitch("Farm With Shift Lock", nil, "face", "shiftlock")
 			faceFolder.AddDropdown("Face Method", { "Shift Lock", "BodyGyro" }, nil, nil, "face", "method")
 			faceFolder.AddDropdown("Shift Lock Direction", { "North", "East", "South", "West" }, nil, nil, "face", "sldirection")
-
-			Puffshrooms.AddSwitch("Farm Puffshrooms", function(n)
+Puffshrooms.AddSwitch("Farm Puffshrooms", function(n)
 				if n and not connections:Get("puffshrooms") then
 					connections:Add("puffshrooms", workspace.Happenings.Puffshrooms.ChildAdded:Connect(function(G)
 						tracked.puffshrooms[G] = true
@@ -64883,26 +64882,12 @@ which bees and get all 3 targets if
 			Puffshrooms.AddDropdown("Allowed Fields", availableFields, true, nil, "puffshrooms", "blacklistedfields", { Field = true, Multiple = true, Blacklist = true })
 			Puffshrooms.AddDropdown("Priority Fields", availableFields, true, nil, "puffshrooms", "priorityfields", { Field = true, Multiple = true })
 
-			-- Новые элементы управления для целевого поля и разгона
-			Puffshrooms.AddDropdown("Target Field", availableFields, true, function(n)
-				cfg.puffshrooms.targetField = n
-				saveConfig()
-			end, "puffshrooms", "targetField", { Field = true })
+			-- Новые элементы управления (автосохранение и подгрузка галочек):
+			Puffshrooms.AddDropdown("Target Field", availableFields, true, nil, "puffshrooms", "targetField", { Field = true, Width = 250 })
+			Puffshrooms.AddSlider("Target Field Min Lvl", nil, 1, 25, "puffshrooms", "targetFieldMinLvl", { Left = true })
+			Puffshrooms.AddDropdown("Intercept Rarity", { "None", "Rare", "Epic", "Legendary", "Mythic" }, false, nil, "puffshrooms", "interceptRarity", { Width = 250 })
+			Puffshrooms.AddDropdown("Push Fields", availableFields, true, nil, "puffshrooms", "pushFields", { Field = true, Multiple = true, Width = 250 })
 
-			Puffshrooms.AddSlider("Target Field Min Lvl", function(n)
-				cfg.puffshrooms.targetFieldMinLvl = n
-				saveConfig()
-			end, 1, 25, "puffshrooms", "targetFieldMinLvl", { Left = true })
-
-			Puffshrooms.AddDropdown("Intercept Rarity", { "None", "Rare", "Epic", "Legendary", "Mythic" }, nil, function(n)
-				cfg.puffshrooms.interceptRarity = n
-				saveConfig()
-			end, "puffshrooms", "interceptRarity")
-
-			Puffshrooms.AddDropdown("Push Fields", availableFields, true, function(n)
-				cfg.puffshrooms.pushFields = n
-				saveConfig()
-			end, "puffshrooms", "pushFields", { Field = true, Multiple = true })
 			followFolder.AddLabel("This will not work if hide other players is enabled")
 			followFolder.AddDropdown("Follow Player", "Players", nil, nil, "misc", "follow", { Start = "None" })
 			followFolder.AddDropdown("Allowed Fields", availableFields, true, nil, "misc", "followfieldblacklist", { Field = true, Multiple = true, Blacklist = true })
