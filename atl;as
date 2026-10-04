@@ -56020,9 +56020,7 @@ findPuffshroom = function(v119)
     local interceptRarityVal = rarityValues[pCfg.interceptRarity] or 4
     local targetFieldName = pCfg.targetField or "Pumpkin Patch"
     local pushFields = pCfg.pushFields or {}
-    local minThresholdLvl = pCfg.targetFieldMinLvl or 4
 
-    -- Синхронизация грибов из папки игры
     local puffFolder = workspace:FindFirstChild("Happenings") and workspace.Happenings:FindFirstChild("Puffshrooms")
     if puffFolder then
         for _, child in ipairs(puffFolder:GetChildren()) do
@@ -56033,7 +56031,6 @@ findPuffshroom = function(v119)
     local allShrooms = {}
     local targetShrooms = {}
     local pushShrooms = {}
-    local hasTriggerInPush = false
 
     for k in pairs(tracked.puffshrooms) do
         local data = getPuffData(k)
@@ -56044,15 +56041,14 @@ findPuffshroom = function(v119)
 
         table.insert(allShrooms, data)
 
+        -- 1. Грибы строго на Пампкине
         if data.field == targetFieldName then
             table.insert(targetShrooms, data)
         end
 
+        -- 2. Грибы на полях разгона (Ёлка, Кактус), КРОМЕ Пампкина!
         if pushFields[data.field] and data.field ~= targetFieldName then
             table.insert(pushShrooms, data)
-            if data.lvl >= minThresholdLvl then
-                hasTriggerInPush = true
-            end
         end
     end
 
@@ -56060,7 +56056,7 @@ findPuffshroom = function(v119)
         return nil
     end
 
-    -- 1. ЭКСТРЕННЫЙ ПЕРЕХВАТ (Legendary / Mythic по всей карте)
+    -- ПРИОРИТЕТ 1: Экстренная редкость (Legendary/Mythic) — только она срывает бота с базы
     local emergency = nil
     for _, s in ipairs(allShrooms) do
         if s.rVal >= interceptRarityVal then
@@ -56073,18 +56069,8 @@ findPuffshroom = function(v119)
         return emergency.v, emergency.rarity, emergency.lvl, emergency.stemPos, emergency.field
     end
 
-    -- 2. УСЛОВИЕ УДЕРЖАНИЯ: если в Push Fields есть гриб >= targetFieldMinLvl и на Пампкине есть ХОТЬ ОДИН гриб
-    if hasTriggerInPush and #targetShrooms > 0 then
-        table.sort(targetShrooms, function(a, b)
-            if a.rVal ~= b.rVal then return a.rVal > b.rVal end
-            if a.lvl ~= b.lvl then return a.lvl > b.lvl end
-            return a.d < b.d
-        end)
-        local best = targetShrooms[1]
-        return best.v, best.rarity, best.lvl, best.stemPos, best.field
-    end
-
-    -- 3. Если на целевом поле просто есть грибы
+    -- ПРИОРИТЕТ 2: ЖЕЛЕЗНЫЙ ЛОК НА ПАМПКИНЕ
+    -- Если на Пампкине есть ХОТЯ БЫ ОДИН гриб (любого лвла: 1, 2, 3), МЫ НЕ СМОТРИМ НА ЕЛКУ!
     if #targetShrooms > 0 then
         table.sort(targetShrooms, function(a, b)
             if a.rVal ~= b.rVal then return a.rVal > b.rVal end
@@ -56095,7 +56081,7 @@ findPuffshroom = function(v119)
         return best.v, best.rarity, best.lvl, best.stemPos, best.field
     end
 
-    -- 4. На Пампкине чисто -> бьем поля цепочки (Кактус / Ёлка)
+    -- ПРИОРИТЕТ 3: НА ПАМПКИНЕ ПУСТО -> ТОЛЬКО ТОГДА летим на Ёлку/Кактус поддержать цепь
     if #pushShrooms > 0 then
         table.sort(pushShrooms, function(a, b)
             if a.rVal ~= b.rVal then return a.rVal > b.rVal end
@@ -56106,7 +56092,7 @@ findPuffshroom = function(v119)
         return best.v, best.rarity, best.lvl, best.stemPos, best.field
     end
 
-    -- 5. Остальные поля карты
+    -- ПРИОРИТЕТ 4: Остальные поля
     table.sort(allShrooms, function(a, b)
         if a.rVal ~= b.rVal then return a.rVal > b.rVal end
         if a.lvl ~= b.lvl then return a.lvl > b.lvl end
@@ -56211,63 +56197,6 @@ farmPuffshroom = function(v119)
 end
 
 _G.farmPuffshroom = farmPuffshroom
-
-local function destroyTotems()
-	for k in pairs(tracked.totems) do
-		local Part = k:FindFirstChild("Part")
-
-		if Part then
-			local field = getFieldAt(Part.Position)
-
-			if field then
-				setField(field.Name)
-				local now = os.clock()
-
-				while not (not Part.Parent or not Part.Parent.Parent or not (os.clock() - now < 180)) do
-					if not RunService.Heartbeat:Wait() then
-						break
-					end
-
-					if not cfg.convert.convertHoney and not cfg.convert.convertHiveBalloon or not shouldConvert(true) then
-						goToField()
-
-						if cfg.combat.avoidmobs then
-							getAggroMobs()
-						end
-
-						if not (not cfg.autofarm.autosprinkler or farmState.field == field.Name) then
-							farmState:Handle()
-						end
-
-						if cfg.face.shiftlock then
-							input:handleShiftLock(true)
-						end
-
-						if field.Name ~= "Mountain Top Field" or not tracked.mondo then
-							farmStep({ skipoverlap = true })
-						else
-							handleMondoChick(true)
-						end
-					elseif shouldConvert() then
-						convertHoney()
-					end
-				end
-
-				if cfg.stickbug.loot then
-					local now2 = os.clock()
-
-					while os.clock() - now2 < 6 do
-						if not RunService.Heartbeat:Wait() then
-							break
-						end
-						goToField()
-						farmStep({ loot = true, loot2 = true })
-					end
-				end
-			end
-		end
-	end
-end
 
 local autofarmLoop
 
