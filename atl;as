@@ -580,20 +580,24 @@ local cfg = {
 		},
 	},
 	puffshrooms = {
-		enabled = false,
-		
-		-- Новая логика целевого поля:
-		targetField = "Pine Tree Forest", -- Выбранное поле, на котором нужно закрепиться
-		targetFieldMinLvl = 8,           -- Уровень гриба, который триггерит фиксацию на этом поле
-		
-		-- Экстренная редкость (бросает всё ради неё):
-		interceptRarity = "Legendary",   -- "None", "Rare", "Epic", "Legendary", "Mythic"
-		
-		-- Приоритетные поля, куда стараться тащить цепочку грибов:
-		pushFields = {
-			["Pine Tree Forest"] = true,
-			["Stump Field"] = true,
-			["Bamboo Field"] = true,
+			enabled = false,
+			blacklistedfields = false,
+			highlvlpriority = true,
+			priorityfields = false,
+			rarity = "Common",
+			maintain = false,
+			mintime = 1,
+			min = 1,
+			max = 25,
+			-- Новые параметры:
+			targetField = "Pumpkin Patch",
+			targetFieldMinLvl = 4,
+			interceptRarity = "Legendary", -- Только Legendary и Mythic могут сорвать бота с полей цепи!
+			pushFields = {
+				["Pumpkin Patch"] = true,
+				["Pine Tree Forest"] = true,
+				["Cactus Field"] = true,
+			},
 		},
 		
 		-- Базовые настройки фильтрации:
@@ -55981,6 +55985,8 @@ end
 
 local lockedTargetFieldActive = false
 
+local lockedChainActive = false
+
 local function findPuffshroom(v118, v119, v120)
     if not v118 and not (not cfg.puffshrooms.maintain or not buffs.PuffBlessing or buffs.PuffBlessing.Text.Text ~= "x100" or not (buffs.PuffBlessing.Percent.Size.Y.Scale > 0.3)) then
         return
@@ -55994,11 +56000,14 @@ local function findPuffshroom(v118, v119, v120)
         Mythic = 5
     }
 
-    local interceptRarityVal = rarityValues[cfg.puffshrooms.interceptRarity] or 999
-    local shrooms = {}
-    local shroomsOnTargetField = {}
+    local interceptRarityVal = rarityValues[cfg.puffshrooms.interceptRarity] or 4 -- По умолчанию Legendary (4)
+    local minCfgRarityVal = rarityValues[cfg.puffshrooms.rarity] or 1
 
-    -- 1. Сбор и парсинг всех валидных грибов
+    local allShrooms = {}
+    local chainShrooms = {}
+    local targetFieldShrooms = {}
+
+    -- 1. Сбор всех живых грибов
     for k in pairs(tracked.puffshrooms) do
         local PuffballTop = k:FindFirstChild("Puffball Top")
         if not PuffballTop or not PuffballTop:FindFirstChild("Attachment") then continue end
@@ -56044,18 +56053,12 @@ local function findPuffshroom(v118, v119, v120)
         if cfg.puffshrooms.blacklistedfields and cfg.puffshrooms.blacklistedfields[field.Name] then continue end
         if field.Name == "Mountain Top Field" and tracked.mondo then continue end
 
-        -- Проверка для вызовов фильтрации (например, квестов v120)
+        -- Проверка для вызовов квестов (v120)
         if v120 then
             local reqVal = rarityValues[v120] or 1
             if v119 ~= k and rVal >= reqVal then
                 return true
             end
-            continue
-        end
-
-        -- Базовая проверка редкости из конфига (если не экстренная)
-        local minCfgVal = rarityValues[cfg.puffshrooms.rarity] or 1
-        if rVal < minCfgVal and rVal < interceptRarityVal then
             continue
         end
 
@@ -56069,21 +56072,29 @@ local function findPuffshroom(v118, v119, v120)
             d = dist
         }
 
-        table.insert(shrooms, entry)
+        table.insert(allShrooms, entry)
 
-        if cfg.puffshrooms.targetField and field.Name == cfg.puffshrooms.targetField then
-            table.insert(shroomsOnTargetField, entry)
+        -- Проверяем, входит ли гриб в поля цепочки (pushFields)
+        local isChainField = (cfg.puffshrooms.pushFields and cfg.puffshrooms.pushFields[field.Name]) or (field.Name == cfg.puffshrooms.targetField)
+        if isChainField then
+            table.insert(chainShrooms, entry)
+        end
+
+        -- Грибы конкретно на основном целевом поле
+        if field.Name == cfg.puffshrooms.targetField then
+            table.insert(targetFieldShrooms, entry)
         end
     end
 
-    if #shrooms == 0 then
-        lockedTargetFieldActive = false
+    if #allShrooms == 0 then
+        lockedChainActive = false
         return nil
     end
 
-    -- 2. ПРИОРИТЕТ 1: Экстренная редкость (бросает всё и летит к ней)
+    -- 2. ПРИОРИТЕТ 1: Экстренная редкость (Legendary/Mythic)
+    -- Бросаем всё, ТОЛЬКО если редкость действительно высокая
     local emergencyShroom = nil
-    for _, s in ipairs(shrooms) do
+    for _, s in ipairs(allShrooms) do
         if s.rVal >= interceptRarityVal then
             if not emergencyShroom 
                 or s.rVal > emergencyShroom.rVal 
@@ -56098,59 +56109,65 @@ local function findPuffshroom(v118, v119, v120)
         return emergencyShroom.v, emergencyShroom.rarity, emergencyShroom.lvl
     end
 
-    -- 3. ПРИОРИТЕТ 2: Фиксация на целевом поле
-    -- Проверяем условие включения лока
-    if not lockedTargetFieldActive and cfg.puffshrooms.targetField then
-        local triggerLvl = cfg.puffshrooms.targetFieldMinLvl or 1
-        for _, s in ipairs(shroomsOnTargetField) do
-            if s.lvl >= triggerLvl then
-                lockedTargetFieldActive = true
-                break
-            end
+    -- 3. ПРИОРИТЕТ 2: Проверка и фиксация на полях цепочки
+    -- Проверяем, есть ли на целевом поле ИЛИ на полях цепочки гриб нужного уровня
+    local minLvlThreshold = cfg.puffshrooms.targetFieldMinLvl or 8
+    local chainHasHighLvl = false
+
+    for _, s in ipairs(chainShrooms) do
+        if s.lvl >= minLvlThreshold then
+            chainHasHighLvl = true
+            break
         end
     end
 
-    -- Если лок активен — чистим ТОЛЬКО целевое поле до последнего гриба
-    if lockedTargetFieldActive then
-        if #shroomsOnTargetField > 0 then
-            table.sort(shroomsOnTargetField, function(a, b)
+    if chainHasHighLvl then
+        lockedChainActive = true
+    end
+
+    -- Если цепочка активна (или залочена) и на полях цепи есть грибы:
+    if lockedChainActive and #chainShrooms > 0 then
+        -- А: Если есть грибы на ТВОЕМ целевом поле — бьем ТОЛЬКО их!
+        if #targetFieldShrooms > 0 then
+            table.sort(targetFieldShrooms, function(a, b)
                 if a.rVal ~= b.rVal then return a.rVal > b.rVal end
                 if a.lvl ~= b.lvl then return a.lvl > b.lvl end
                 return a.d < b.d
             end)
-            local chosen = shroomsOnTargetField[1]
+            local chosen = targetFieldShrooms[1]
             return chosen.v, chosen.rarity, chosen.lvl
-        else
-            lockedTargetFieldActive = false
         end
+
+        -- Б: Твое поле пусто, но на соседних полях цепочки (Ёлка/Кактус) есть грибы
+        -- Бьем грибы на соседних полях цепочки, чтобы не слить уровень!
+        table.sort(chainShrooms, function(a, b)
+            if a.rVal ~= b.rVal then return a.rVal > b.rVal end
+            if a.lvl ~= b.lvl then return a.lvl > b.lvl end
+            return a.d < b.d
+        end)
+        local chosenChain = chainShrooms[1]
+        return chosenChain.v, chosenChain.rarity, chosenChain.lvl
+    else
+        -- На всех полях цепочки пусто — сбрасываем лок
+        lockedChainActive = false
     end
 
-    -- 4. ПРИОРИТЕТ 3: Обычный фарм / Разгон в сторону приоритетных полей (pushFields)
+    -- 4. ПРИОРИТЕТ 3: Обычный поиск по всей карте (когда цепочки нет)
     local validShrooms = {}
-    for _, s in ipairs(shrooms) do
-        if s.lvl >= cfg.puffshrooms.min and s.lvl <= cfg.puffshrooms.max then
+    for _, s in ipairs(allShrooms) do
+        if s.lvl >= cfg.puffshrooms.min and s.lvl <= cfg.puffshrooms.max and s.rVal >= minCfgRarityVal then
             table.insert(validShrooms, s)
         end
     end
-    if #validShrooms == 0 then validShrooms = shrooms end
+    if #validShrooms == 0 then validShrooms = allShrooms end
 
     table.sort(validShrooms, function(a, b)
-        local aPush = (cfg.puffshrooms.pushFields and cfg.puffshrooms.pushFields[a.field]) or false
-        local bPush = (cfg.puffshrooms.pushFields and cfg.puffshrooms.pushFields[b.field]) or false
+        local aChain = (cfg.puffshrooms.pushFields and cfg.puffshrooms.pushFields[a.field]) or false
+        local bChain = (cfg.puffshrooms.pushFields and cfg.puffshrooms.pushFields[b.field]) or false
 
-        -- Сначала грибы на нужных полях
-        if aPush ~= bPush then
-            return aPush == true
-        end
-        -- Затем по редкости
-        if a.rVal ~= b.rVal then
-            return a.rVal > b.rVal
-        end
-        -- Затем по уровню (если включен highlvlpriority)
-        if cfg.puffshrooms.highlvlpriority and a.lvl ~= b.lvl then
-            return a.lvl > b.lvl
-        end
-        -- Затем по дистанции
+        if aChain ~= bChain then return aChain == true end
+        if a.rVal ~= b.rVal then return a.rVal > b.rVal end
+        if a.lvl ~= b.lvl then return a.lvl > b.lvl end
         return a.d < b.d
     end)
 
@@ -56175,125 +56192,106 @@ farmPuffshroom = function(v119)
 
     if not field or not availableFields[field.Name] then
         tracked.puffshrooms[puffshroom] = nil
-    else
-        if not (field.Name ~= "Coconut Field" or mobCooldown(monsterSpawners.CoconutCrab)) then
-            logger.log("Puffshroom: Cannot farm in Coconut Field: Coconut Crab is alive")
-            tracked.puffshrooms[puffshroom] = nil
-            error("return", 0)
-        end
+        return
+    end
 
-        if not cfg.convert.convertHoney and not cfg.convert.convertHiveBalloon or not shouldConvert(true) then
-            logger.log(puffRarity, "Puffshroom (lvl:", puffLevel .. "): Found in", field.Name)
-            setField(field.Name)
+    if not (field.Name ~= "Coconut Field" or mobCooldown(monsterSpawners.CoconutCrab)) then
+        logger.log("Puffshroom: Cannot farm in Coconut Field: Coconut Crab is alive")
+        tracked.puffshrooms[puffshroom] = nil
+        error("return", 0)
+    end
 
-            if not (not cfg.convert.autoHoneyMask and not cfg.combat.demonmask or not (cfg.vars.movement == "Tween" or cfg.convert.defaultMask ~= "Demon Mask")) then
-                if not localPlayer.Character:FindFirstChild(cfg.convert.defaultMask) then
-                    equipAccessory(cfg.convert.defaultMask)
-                end
-            end
+    -- БЛОКИРУЕМ ПРЕРЫВАНИЯ: Пока бьем грибы, внешние системы не должны уводить бота
+    state.farmingPuffshrooms = true
 
-            if getFieldAt(getRootPart().Position) ~= field then
-                goTo(position2, field.Name)
-            end
+    logger.log(puffRarity, "Puffshroom (lvl:", puffLevel .. "): Found in", field.Name)
+    setField(field.Name)
 
-            walkTo(position2, true, 10)
-
-            if not (not cfg.autofarm.autosprinkler or farmState.field == field.Name) then
-                farmState:Place({ position2 })
-                farmState.field = field.Name
-            end
-
-            local farmOptions = { loot = true, origin = position2, range = 25 }
-            local now = os.clock()
-            local exitTo = nil
-
-            while true do
-                if not puffshroom.Parent or not (os.clock() - now < 300) then
-                    exitTo = 1
-                    break
-                else
-                    if not RunService.Heartbeat:Wait() then
-                        exitTo = 1
-                        break
-                    elseif not cfg.convert.convertHoney and not cfg.convert.convertHiveBalloon or not shouldConvert(true) then
-                        
-                        -- ПРОВЕРКА ПЕРЕХВАТА ЦЕЛИ ВО ВРЕМЯ ФАРМА:
-                        -- Если появился экстренный редкий гриб (или текущий гриб не оптимален) — прерываем цикл и переключаемся
-                        local newTarget, newRarity, newLvl = findPuffshroom(v119)
-                        if newTarget and newTarget ~= puffshroom then
-                            local rarityValues = { Common = 1, Rare = 2, Epic = 3, Legendary = 4, Mythic = 5 }
-                            local curRVal = rarityValues[puffRarity] or 1
-                            local newRVal = rarityValues[newRarity] or 1
-                            local interceptRVal = rarityValues[cfg.puffshrooms.interceptRarity] or 999
-
-                            -- Если новая цель — это экстренная редкость, а текущий гриб ниже её:
-                            if newRVal >= interceptRVal and curRVal < newRVal then
-                                logger.log("Switching to higher rarity Puffshroom:", newRarity)
-                                break
-                            end
-
-                            -- Если мы на целевом поле, а цель внезапно вне его:
-                            if lockedTargetFieldActive and field.Name == cfg.puffshrooms.targetField then
-                                local newField = getFieldAt(newTarget["Puffball Stem"].Position)
-                                if newField and newField.Name ~= cfg.puffshrooms.targetField and newRVal < interceptRVal then
-                                    -- Не улетаем с целевого поля
-                                else
-                                    if newTarget ~= puffshroom and newField and newField.Name == cfg.puffshrooms.targetField then
-                                        -- Переключаемся на более высокий уровень внутри того же поля
-                                        break
-                                    end
-                                end
-                            end
-                        end
-
-                        if not (not cfg.convert.autoHoneyMask and not cfg.combat.demonmask or not (cfg.vars.movement == "Tween" or cfg.convert.defaultMask ~= "Demon Mask")) then
-                            if not localPlayer.Character:FindFirstChild(cfg.convert.defaultMask) then
-                                equipAccessory(cfg.convert.defaultMask)
-                            end
-                        end
-
-                        if getFieldAt(getRootPart().Position) ~= field then
-                            goTo(position2, field.Name)
-                        end
-
-                        if cfg.combat.avoidmobs then
-                            getAggroMobs()
-                        end
-
-                        if cfg.face.shiftlock then
-                            input:handleShiftLock(true)
-                        end
-
-                        reportStatus(3)
-                        farmStep(farmOptions)
-                        continue
-                    else
-                        if shouldConvert() then
-                            convertHoney()
-                        end
-                        continue
-                    end
-
-                    break
-                end
-            end
-
-            if exitTo ~= 1 then
-                farmPuffshroom(v119)
-                return
-            end
-
-            if os.clock() - now >= 300 then
-                tracked.puffshrooms[puffshroom] = nil
-            else
-                farmFor(farmOptions, puffRarity ~= "Common" and puffRarity ~= "Rare" and 14 or 8, puffRarity ~= "Common" and puffRarity ~= "Rare" and 6 or 2)
-            end
-        elseif shouldConvert() then
-            convertHoney()
+    if not (not cfg.convert.autoHoneyMask and not cfg.combat.demonmask or not (cfg.vars.movement == "Tween" or cfg.convert.defaultMask ~= "Demon Mask")) then
+        if not localPlayer.Character:FindFirstChild(cfg.convert.defaultMask) then
+            equipAccessory(cfg.convert.defaultMask)
         end
     end
 
-    error("return", 0)
+    if getFieldAt(getRootPart().Position) ~= field then
+        goTo(position2, field.Name)
+    end
+
+    walkTo(position2, true, 10)
+
+    if not (not cfg.autofarm.autosprinkler or farmState.field == field.Name) then
+        farmState:Place({ position2 })
+        farmState.field = field.Name
+    end
+
+    local farmOptions = { loot = true, origin = position2, range = 25 }
+    local now = os.clock()
+    local exitTo = nil
+
+    while true do
+        if not puffshroom.Parent or not (os.clock() - now < 300) then
+            exitTo = 1
+            break
+        end
+
+        if not RunService.Heartbeat:Wait() then
+            exitTo = 1
+            break
+        end
+
+        -- ПРОВЕРКА ПЕРЕХВАТА РЕДКОСТИ:
+        local newTarget, newRarity, newLvl = findPuffshroom(v119)
+        if newTarget and newTarget ~= puffshroom then
+            local rarityValues = { Common = 1, Rare = 2, Epic = 3, Legendary = 4, Mythic = 5 }
+            local curRVal = rarityValues[puffRarity] or 1
+            local newRVal = rarityValues[newRarity] or 1
+            local interceptRVal = rarityValues[cfg.puffshrooms.interceptRarity] or 999
+
+            if newRVal >= interceptRVal and curRVal < newRVal then
+                logger.log("Switching to higher rarity Puffshroom:", newRarity)
+                break
+            end
+
+            if lockedTargetFieldActive and field.Name == cfg.puffshrooms.targetField then
+                local newField = getFieldAt(newTarget["Puffball Stem"].Position)
+                if newField and newField.Name == cfg.puffshrooms.targetField and newTarget ~= puffshroom then
+                    break
+                end
+            end
+        end
+
+        if not (not cfg.convert.autoHoneyMask and not cfg.combat.demonmask or not (cfg.vars.movement == "Tween" or cfg.convert.defaultMask ~= "Demon Mask")) then
+            if not localPlayer.Character:FindFirstChild(cfg.convert.defaultMask) then
+                equipAccessory(cfg.convert.defaultMask)
+            end
+        end
+
+        if getFieldAt(getRootPart().Position) ~= field then
+            goTo(position2, field.Name)
+        end
+
+        -- Включаем шифтлок при необходимости
+        if cfg.face.shiftlock then
+            input:handleShiftLock(true)
+        end
+
+        reportStatus(3)
+        farmStep(farmOptions)
+    end
+
+    -- Снимаем блок приоритета после завершения гриба
+    state.farmingPuffshrooms = nil
+
+    if exitTo ~= 1 then
+        farmPuffshroom(v119)
+        return
+    end
+
+    if os.clock() - now >= 300 then
+        tracked.puffshrooms[puffshroom] = nil
+    else
+        farmFor(farmOptions, puffRarity ~= "Common" and puffRarity ~= "Rare" and 14 or 8, puffRarity ~= "Common" and puffRarity ~= "Rare" and 6 or 2)
+    end
 end
 
 local function destroyTotems()
