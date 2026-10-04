@@ -590,9 +590,17 @@ local cfg = {
 		priorityfields = false,
 		rarity = "Common",
 		maintain = false,
-		mintime = 30,
+		mintime = 15,
 		min = 1,
-		max = 15,
+		max = 25,
+		targetField = "Pumpkin Patch",
+		targetFieldMinLvl = 4,
+		interceptRarity = "Legendary",
+		pushFields = {
+			["Pumpkin Patch"] = true,
+			["Pine Tree Forest"] = true,
+			["Cactus Field"] = true,
+		},
 	},
 	rbc = {
 		enabled = false,
@@ -56021,6 +56029,7 @@ findPuffshroom = function(v119)
     local targetFieldName = pCfg.targetField or "Pumpkin Patch"
     local pushFields = pCfg.pushFields or {}
 
+    -- Быстрая синхронизация с воркспейсом
     local puffFolder = workspace:FindFirstChild("Happenings") and workspace.Happenings:FindFirstChild("Puffshrooms")
     if puffFolder then
         for _, child in ipairs(puffFolder:GetChildren()) do
@@ -56041,13 +56050,11 @@ findPuffshroom = function(v119)
 
         table.insert(allShrooms, data)
 
-        -- 1. Грибы строго на Пампкине
+        -- Грибы строго на Пампкине
         if data.field == targetFieldName then
             table.insert(targetShrooms, data)
-        end
-
-        -- 2. Грибы на полях разгона (Ёлка, Кактус), КРОМЕ Пампкина!
-        if pushFields[data.field] and data.field ~= targetFieldName then
+        -- Грибы на Ёлке и Кактусе (без Пампкина!)
+        elseif pushFields[data.field] then
             table.insert(pushShrooms, data)
         end
     end
@@ -56056,7 +56063,7 @@ findPuffshroom = function(v119)
         return nil
     end
 
-    -- ПРИОРИТЕТ 1: Экстренная редкость (Legendary/Mythic) — только она срывает бота с базы
+    -- 1. ЭКСТРЕННЫЙ ПЕРЕХВАТ (Легендарные и Мифические по всей карте)
     local emergency = nil
     for _, s in ipairs(allShrooms) do
         if s.rVal >= interceptRarityVal then
@@ -56069,8 +56076,8 @@ findPuffshroom = function(v119)
         return emergency.v, emergency.rarity, emergency.lvl, emergency.stemPos, emergency.field
     end
 
-    -- ПРИОРИТЕТ 2: ЖЕЛЕЗНЫЙ ЛОК НА ПАМПКИНЕ
-    -- Если на Пампкине есть ХОТЯ БЫ ОДИН гриб (любого лвла: 1, 2, 3), МЫ НЕ СМОТРИМ НА ЕЛКУ!
+    -- 2. ЖЕЛЕЗНЫЙ ЛОК НА ПАМПКИНЕ (Target Field):
+    -- Если на Пампкине есть ХОТЯ БЫ ОДИН гриб (любого лвла), бот бьет его и НЕ СМОТРИТ на Ёлку!
     if #targetShrooms > 0 then
         table.sort(targetShrooms, function(a, b)
             if a.rVal ~= b.rVal then return a.rVal > b.rVal end
@@ -56081,7 +56088,8 @@ findPuffshroom = function(v119)
         return best.v, best.rarity, best.lvl, best.stemPos, best.field
     end
 
-    -- ПРИОРИТЕТ 3: НА ПАМПКИНЕ ПУСТО -> ТОЛЬКО ТОГДА летим на Ёлку/Кактус поддержать цепь
+    -- 3. ПОЛЯ РАЗГОНА (Кактус / Ёлка):
+    -- Летим сюда ТОЛЬКО тогда, когда на Пампкине 0 грибов!
     if #pushShrooms > 0 then
         table.sort(pushShrooms, function(a, b)
             if a.rVal ~= b.rVal then return a.rVal > b.rVal end
@@ -56092,7 +56100,7 @@ findPuffshroom = function(v119)
         return best.v, best.rarity, best.lvl, best.stemPos, best.field
     end
 
-    -- ПРИОРИТЕТ 4: Остальные поля
+    -- 4. Остальные поля карты
     table.sort(allShrooms, function(a, b)
         if a.rVal ~= b.rVal then return a.rVal > b.rVal end
         if a.lvl ~= b.lvl then return a.lvl > b.lvl end
@@ -56105,30 +56113,69 @@ end
 _G.findPuffshroom = findPuffshroom
 
 farmPuffshroom = function(v119)
+    -- МГНОВЕННЫЙ ПОИСК: если грибов нет, выходим за 0 миллисекунд без task.wait!
+    local puff, rarity, lvl, stemPos, fieldName = findPuffshroom(v119)
+    if not puff then
+        return
+    end
+
+    local stem = puff:FindFirstChild("Puffball Stem")
+    if not stem then
+        tracked.puffshrooms[puff] = nil
+        return
+    end
+
     local prevField = currentFieldName
 
+    if not (fieldName ~= "Coconut Field" or mobCooldown(monsterSpawners.CoconutCrab)) then
+        logger.log("Puffshroom: Cannot farm in Coconut Field: Coconut Crab is alive")
+        tracked.puffshrooms[puff] = nil
+        return
+    end
+
+    state.farmingPuffshrooms = true
+    logger.log(rarity, "Puffshroom (lvl:", lvl .. "): Farming in", fieldName)
+    setField(fieldName)
+
+    if not (not cfg.convert.autoHoneyMask and not cfg.combat.demonmask or not (cfg.vars.movement == "Tween" or cfg.convert.defaultMask ~= "Demon Mask")) then
+        if not localPlayer.Character:FindFirstChild(cfg.convert.defaultMask) then
+            equipAccessory(cfg.convert.defaultMask)
+        end
+    end
+
+    if getFieldAt(getRootPart().Position) ~= workspace.FlowerZones[fieldName] then
+        goTo(stemPos, fieldName)
+    end
+
+    walkTo(stemPos, true, 10)
+
+    if not (not cfg.autofarm.autosprinkler or farmState.field == fieldName) then
+        farmState:Place({ stemPos })
+        farmState.field = fieldName
+    end
+
+    local farmOptions = { loot = true, origin = stemPos, range = 25 }
+    local now = os.clock()
+
     while true do
-        local puff, rarity, lvl, stemPos, fieldName = findPuffshroom(v119)
-
-        if not puff then
-            local waitTimer = os.clock()
-            while os.clock() - waitTimer < 2.5 do
-                task.wait(0.2)
-                puff, rarity, lvl, stemPos, fieldName = findPuffshroom(v119)
-                if puff then break end
-            end
-
-            if not puff then
-                break
-            end
+        if not puff.Parent or (os.clock() - now >= 300) then
+            break
         end
 
-        logger.log(rarity, "Puffshroom (lvl:", lvl .. "): Farming in", fieldName)
-        setField(fieldName)
+        if not RunService.Heartbeat:Wait() then
+            break
+        end
 
-        if not (not cfg.convert.autoHoneyMask and not cfg.combat.demonmask or not (cfg.vars.movement == "Tween" or cfg.convert.defaultMask ~= "Demon Mask")) then
-            if not localPlayer.Character:FindFirstChild(cfg.convert.defaultMask) then
-                equipAccessory(cfg.convert.defaultMask)
+        local newPuff, newRarity, newLvl = findPuffshroom(v119)
+        if newPuff and newPuff ~= puff then
+            local rarityValues = { Common = 1, Rare = 2, Epic = 3, Legendary = 4, Mythic = 5 }
+            local curVal = rarityValues[rarity] or 1
+            local newVal = rarityValues[newRarity] or 1
+            local intVal = (cfg.puffshrooms and rarityValues[cfg.puffshrooms.interceptRarity]) or 4
+
+            if newVal >= intVal and curVal < newVal then
+                logger.log("Intercepting higher rarity Puffshroom:", newRarity)
+                break
             end
         end
 
@@ -56136,59 +56183,22 @@ farmPuffshroom = function(v119)
             goTo(stemPos, fieldName)
         end
 
-        walkTo(stemPos, true, 10)
-
-        if not (not cfg.autofarm.autosprinkler or farmState.field == fieldName) then
-            farmState:Place({ stemPos })
-            farmState.field = fieldName
+        if cfg.face.shiftlock then
+            input:handleShiftLock(true)
         end
 
-        local farmOptions = { loot = true, origin = stemPos, range = 25 }
-        local now = os.clock()
-
-        while true do
-            if not puff.Parent or (os.clock() - now >= 300) then
-                break
-            end
-
-            if not RunService.Heartbeat:Wait() then
-                break
-            end
-
-            local newPuff, newRarity, newLvl = findPuffshroom(v119)
-            if newPuff and newPuff ~= puff then
-                local rarityValues = { Common = 1, Rare = 2, Epic = 3, Legendary = 4, Mythic = 5 }
-                local curVal = rarityValues[rarity] or 1
-                local newVal = rarityValues[newRarity] or 1
-                local intVal = (cfg.puffshrooms and rarityValues[cfg.puffshrooms.interceptRarity]) or 4
-
-                if newVal >= intVal and curVal < newVal then
-                    logger.log("Intercepting higher rarity Puffshroom:", newRarity)
-                    break
-                end
-            end
-
-            if getFieldAt(getRootPart().Position) ~= workspace.FlowerZones[fieldName] then
-                goTo(stemPos, fieldName)
-            end
-
-            if cfg.face.shiftlock then
-                input:handleShiftLock(true)
-            end
-
-            reportStatus(3)
-            farmStep(farmOptions)
-        end
-
-        if os.clock() - now < 300 then
-            farmFor(farmOptions, rarity ~= "Common" and rarity ~= "Rare" and 8 or 4, 2)
-        end
-
-        tracked.puffshrooms[puff] = nil
+        reportStatus(3)
+        farmStep(farmOptions)
     end
 
-    -- Возврат исходного поля для обычного автофарма
+    if os.clock() - now < 300 then
+        farmFor(farmOptions, rarity ~= "Common" and rarity ~= "Rare" and 8 or 4, 2)
+    end
+
+    tracked.puffshrooms[puff] = nil
     state.farmingPuffshrooms = nil
+
+    -- Возвращаем поле обычного автофарма
     if prevField and availableFields[prevField] then
         setField(prevField)
     elseif cfg.autofarm.field1 and availableFields[cfg.autofarm.field1] then
