@@ -56130,17 +56130,15 @@ end
 _G.findPuffshroom = findPuffshroom
 
 farmPuffshroom = function(v119)
-    -- 1. Запоминаем исходное поле обычного автофарма, чтобы восстановить его при выходе
-    local originalField = currentFieldName or cfg.autofarm.field1
-
-    state.farmingPuffshrooms = true
+    -- Запоминаем текущее поле автофарма до начала грибов
+    local prevField = currentFieldName
 
     while true do
         local puff, rarity, lvl, stemPos, fieldName = findPuffshroom(v119)
 
         if not puff then
             local waitTimer = os.clock()
-            while os.clock() - waitTimer < 3 do
+            while os.clock() - waitTimer < 2.5 do
                 task.wait(0.2)
                 puff, rarity, lvl, stemPos, fieldName = findPuffshroom(v119)
                 if puff then break end
@@ -56183,6 +56181,7 @@ farmPuffshroom = function(v119)
                 break
             end
 
+            -- Проверка на экстренный перехват
             local newPuff, newRarity, newLvl = findPuffshroom(v119)
             if newPuff and newPuff ~= puff then
                 local rarityValues = { Common = 1, Rare = 2, Epic = 3, Legendary = 4, Mythic = 5 }
@@ -56215,10 +56214,12 @@ farmPuffshroom = function(v119)
         tracked.puffshrooms[puff] = nil
     end
 
-    -- 2. ОБЯЗАТЕЛЬНО ВОЗВРАЩАЕМ ПОЛЕ И СБРАСЫВАЕМ РЕЖИМ ПЕРЕД ВЫХОДОМ В АВТОФАРМ:
+    -- ВОТ ЗДЕСЬ СБРОС: возвращаем поле автофарма обратно
     state.farmingPuffshrooms = nil
-    if originalField and availableFields[originalField] then
-        setField(originalField)
+    if prevField and availableFields[prevField] then
+        setField(prevField)
+    elseif cfg.autofarm.field1 and availableFields[cfg.autofarm.field1] then
+        setField(cfg.autofarm.field1)
     end
 end
 
