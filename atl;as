@@ -67883,4 +67883,3 @@ buffs = nil
 handleAmuletPopup = nil
 nextMoveTime = nil
 collectObject = nil
-LPH_CRASH()
