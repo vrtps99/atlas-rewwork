@@ -56130,21 +56130,22 @@ end
 _G.findPuffshroom = findPuffshroom
 
 farmPuffshroom = function(v119)
+    -- 1. Запоминаем исходное поле обычного автофарма, чтобы восстановить его при выходе
+    local originalField = currentFieldName or cfg.autofarm.field1
+
     state.farmingPuffshrooms = true
 
     while true do
         local puff, rarity, lvl, stemPos, fieldName = findPuffshroom(v119)
 
-        -- Если прямо сейчас гриб не найден, стоим на месте и опрашиваем ВОРКСПЕЙС до 4 секунд!
         if not puff then
             local waitTimer = os.clock()
-            while os.clock() - waitTimer < 4 do
-                task.wait(0.25)
+            while os.clock() - waitTimer < 3 do
+                task.wait(0.2)
                 puff, rarity, lvl, stemPos, fieldName = findPuffshroom(v119)
                 if puff then break end
             end
 
-            -- Если за 4 секунды новых спор и грибов не появилось нигде — цепочка реально умерла
             if not puff then
                 break
             end
@@ -56182,7 +56183,6 @@ farmPuffshroom = function(v119)
                 break
             end
 
-            -- Проверка на перехват экстренной редкости
             local newPuff, newRarity, newLvl = findPuffshroom(v119)
             if newPuff and newPuff ~= puff then
                 local rarityValues = { Common = 1, Rare = 2, Epic = 3, Legendary = 4, Mythic = 5 }
@@ -56208,16 +56208,18 @@ farmPuffshroom = function(v119)
             farmStep(farmOptions)
         end
 
-        -- Собираем лут
         if os.clock() - now < 300 then
             farmFor(farmOptions, rarity ~= "Common" and rarity ~= "Rare" and 8 or 4, 2)
         end
 
         tracked.puffshrooms[puff] = nil
-        -- Не выходим из while true! Сразу идем сканировать следующий гриб.
     end
 
+    -- 2. ОБЯЗАТЕЛЬНО ВОЗВРАЩАЕМ ПОЛЕ И СБРАСЫВАЕМ РЕЖИМ ПЕРЕД ВЫХОДОМ В АВТОФАРМ:
     state.farmingPuffshrooms = nil
+    if originalField and availableFields[originalField] then
+        setField(originalField)
+    end
 end
 
 _G.farmPuffshroom = farmPuffshroom
