@@ -56185,6 +56185,124 @@ local function findPuffshroom(v118, v119, v120)
     return best.v, best.rarity, best.lvl
 end
 
+local farmPuffshroom
+
+farmPuffshroom = function(v119)
+    local puffshroom, puffRarity, puffLevel = findPuffshroom(v119)
+    if not puffshroom then
+        return
+    end
+
+    local stem = puffshroom:FindFirstChild("Puffball Stem")
+    if not stem then
+        tracked.puffshrooms[puffshroom] = nil
+        return
+    end
+
+    local position2 = stem.Position
+    local field = getFieldAt(position2)
+
+    if not field or not availableFields[field.Name] then
+        tracked.puffshrooms[puffshroom] = nil
+        return
+    end
+
+    if not (field.Name ~= "Coconut Field" or mobCooldown(monsterSpawners.CoconutCrab)) then
+        logger.log("Puffshroom: Cannot farm in Coconut Field: Coconut Crab is alive")
+        tracked.puffshrooms[puffshroom] = nil
+        return
+    end
+
+    -- Блокируем прерывания бота сторонними задачами
+    state.farmingPuffshrooms = true
+
+    logger.log(puffRarity, "Puffshroom (lvl:", puffLevel .. "): Found in", field.Name)
+    setField(field.Name)
+
+    if not (not cfg.convert.autoHoneyMask and not cfg.combat.demonmask or not (cfg.vars.movement == "Tween" or cfg.convert.defaultMask ~= "Demon Mask")) then
+        if not localPlayer.Character:FindFirstChild(cfg.convert.defaultMask) then
+            equipAccessory(cfg.convert.defaultMask)
+        end
+    end
+
+    if getFieldAt(getRootPart().Position) ~= field then
+        goTo(position2, field.Name)
+    end
+
+    walkTo(position2, true, 10)
+
+    if not (not cfg.autofarm.autosprinkler or farmState.field == field.Name) then
+        farmState:Place({ position2 })
+        farmState.field = field.Name
+    end
+
+    local farmOptions = { loot = true, origin = position2, range = 25 }
+    local now = os.clock()
+    local exitTo = nil
+
+    while true do
+        if not puffshroom.Parent or not (os.clock() - now < 300) then
+            exitTo = 1
+            break
+        end
+
+        if not RunService.Heartbeat:Wait() then
+            exitTo = 1
+            break
+        end
+
+        -- ПРОВЕРКА ПЕРЕХВАТА РЕДКОСТИ:
+        local newTarget, newRarity, newLvl = findPuffshroom(v119)
+        if newTarget and newTarget ~= puffshroom then
+            local rarityValues = { Common = 1, Rare = 2, Epic = 3, Legendary = 4, Mythic = 5 }
+            local curRVal = rarityValues[puffRarity] or 1
+            local newRVal = rarityValues[newRarity] or 1
+            local interceptRVal = (cfg.puffshrooms and rarityValues[cfg.puffshrooms.interceptRarity]) or 4
+
+            if newRVal >= interceptRVal and curRVal < newRVal then
+                logger.log("Switching to higher rarity Puffshroom:", newRarity)
+                break
+            end
+        end
+
+        if not (not cfg.convert.autoHoneyMask and not cfg.combat.demonmask or not (cfg.vars.movement == "Tween" or cfg.convert.defaultMask ~= "Demon Mask")) then
+            if not localPlayer.Character:FindFirstChild(cfg.convert.defaultMask) then
+                equipAccessory(cfg.convert.defaultMask)
+            end
+        end
+
+        if getFieldAt(getRootPart().Position) ~= field then
+            goTo(position2, field.Name)
+        end
+
+        if cfg.face.shiftlock then
+            input:handleShiftLock(true)
+        end
+
+        reportStatus(3)
+        farmStep(farmOptions)
+    end
+
+    state.farmingPuffshrooms = nil
+
+    if exitTo ~= 1 then
+        farmPuffshroom(v119)
+        return
+    end
+
+    if os.clock() - now >= 300 then
+        tracked.puffshrooms[puffshroom] = nil
+    else
+        farmFor(farmOptions, puffRarity ~= "Common" and puffRarity ~= "Rare" and 14 or 8, puffRarity ~= "Common" and puffRarity ~= "Rare" and 6 or 2)
+    end
+end
+
+-- Делаем функцию глобально доступной, чтобы строки 61k и 63k никогда не получали nil
+_G.farmPuffshroom = farmPuffshroom
+
+
+
+
 local function destroyTotems()
 	for k in pairs(tracked.totems) do
 		local Part = k:FindFirstChild("Part")
@@ -60347,6 +60465,7 @@ do
 																	if cfg.combat.avoidmobs then
 																		getAggroMobs()
 																	end
+
 
 																	if cfg.face.shiftlock then
 																		input:handleShiftLock(true)
@@ -67883,3 +68002,5 @@ buffs = nil
 handleAmuletPopup = nil
 nextMoveTime = nil
 collectObject = nil
+LPH_CRASH()
+  
