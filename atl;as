@@ -55980,11 +55980,36 @@ local lockedTargetFieldActive = false
 
 local lockedChainActive = false
 
-local function findPuffshroom(v118, v119, v120)
-    if not v118 and not (not (cfg and cfg.puffshrooms and cfg.puffshrooms.maintain) or not buffs.PuffBlessing or buffs.PuffBlessing.Text.Text ~= "x100" or not (buffs.PuffBlessing.Percent.Size.Y.Scale > 0.3)) then
-        return
+local function getPuffData(k)
+    if not k or not k.Parent then return nil end
+    local top = k:FindFirstChild("Puffball Top")
+    local stem = k:FindFirstChild("Puffball Stem")
+    if not top or not stem then return nil end
+
+    local field = getFieldAt(stem.Position)
+    if not field or not field.Name or not availableFields or not availableFields[field.Name] then
+        return nil
     end
 
+    local text = ""
+    pcall(function()
+        text = top.Attachment.Gui.NameRow.TextLabel.Text
+    end)
+
+    local rarity = string.match(text, "(%a*)%s+Puffshroom") or "Common"
+    local lvl = tonumber(string.match(text, "Lvl (%d+)")) or 1
+
+    return {
+        v = k,
+        field = field.Name,
+        rarity = rarity,
+        lvl = lvl,
+        stemPos = stem.Position,
+        topPos = top.Position
+    }
+end
+
+findPuffshroom = function(v119)
     local rarityValues = {
         Common = 1,
         Rare = 2,
@@ -55994,276 +56019,106 @@ local function findPuffshroom(v118, v119, v120)
     }
 
     local pCfg = (cfg and cfg.puffshrooms) or {}
-    local interceptRarityKey = pCfg.interceptRarity or "Legendary"
-    local interceptRarityVal = rarityValues[interceptRarityKey] or 4
-    local minCfgRarityVal = rarityValues[pCfg.rarity] or 1
+    local interceptRarityVal = rarityValues[pCfg.interceptRarity] or 4
+    local targetFieldName = pCfg.targetField or "Pumpkin Patch"
+    local pushFields = pCfg.pushFields or {}
 
     local allShrooms = {}
     local chainShrooms = {}
-    local targetFieldShrooms = {}
+    local targetShrooms = {}
 
-    -- 1. Сбор всех живых грибов
     for k in pairs(tracked.puffshrooms) do
-        if not k or not k.Parent then continue end
-        local PuffballTop = k:FindFirstChild("Puffball Top")
-        if not PuffballTop or not PuffballTop:FindFirstChild("Attachment") then continue end
-        if not PuffballTop.Attachment:FindFirstChild("Gui") then continue end
-        if not PuffballTop.Attachment.Gui:FindFirstChild("NameRow") then continue end
-        if not PuffballTop.Attachment.Gui.NameRow:FindFirstChild("TextLabel") then continue end
+        local data = getPuffData(k)
+        if not data then continue end
 
-        local remainingSeconds = 0
-        for _, child in pairs(PuffballTop.Attachment.Gui:GetChildren()) do
-            if child.Name == "BarRow" and child:FindFirstChild("Bar") then
-                local NumberLabel = child.Bar:FindFirstChild("NumberLabel")
-                if NumberLabel and NumberLabel.Text then
-                    local text = NumberLabel.Text
-                    local _, colonCount = string.gsub(text, ":", "")
-                    if colonCount > 0 or string.find(text, "s") then
-                        local minutesPart, secondsPart
-                        if colonCount == 1 then
-                            minutesPart, secondsPart = string.match(text, "(%d+):(%d+)")
-                        else
-                            secondsPart = string.match(text, "%d+")
-                        end
-                        if minutesPart then remainingSeconds = remainingSeconds + (tonumber(minutesPart) or 0) * 60 end
-                        if secondsPart then remainingSeconds = remainingSeconds + (tonumber(secondsPart) or 0) end
-                        break
-                    end
-                end
-            end
+        data.rVal = rarityValues[data.rarity] or 1
+        data.d = distanceTo(data.topPos)
+
+        table.insert(allShrooms, data)
+
+        if data.field == targetFieldName then
+            table.insert(targetShrooms, data)
         end
 
-        local mintime = pCfg.mintime or 15
-        if remainingSeconds <= mintime then
-            tracked.puffshrooms[k] = nil
-            continue
-        end
-
-        local text = PuffballTop.Attachment.Gui.NameRow.TextLabel.Text
-        local puffRarity = (text and string.match(text, "(%a*)%s+Puffshroom")) or "Common"
-        if not rarityValues[puffRarity] then puffRarity = "Common" end
-        local puffLevel = (text and tonumber(string.match(text, "Lvl (%d+)"))) or 1
-        local rVal = rarityValues[puffRarity] or 1
-
-        local stem = k:FindFirstChild("Puffball Stem")
-        if not stem then continue end
-
-        local field = getFieldAt(stem.Position)
-        if not field or not field.Name or not availableFields or not availableFields[field.Name] then 
-            continue 
-        end
-
-        local fieldName = field.Name
-
-        if type(pCfg.blacklistedfields) == "table" and pCfg.blacklistedfields[fieldName] then 
-            continue 
-        end
-        if fieldName == "Mountain Top Field" and tracked.mondo then 
-            continue 
-        end
-
-        if v120 then
-            local reqVal = rarityValues[v120] or 1
-            if v119 ~= k and rVal >= reqVal then
-                return true
-            end
-            continue
-        end
-
-        local dist = distanceTo(PuffballTop.Position)
-        local entry = {
-            v = k,
-            field = fieldName,
-            rarity = puffRarity,
-            rVal = rVal,
-            lvl = puffLevel,
-            d = dist
-        }
-
-        table.insert(allShrooms, entry)
-
-        local pushTable = pCfg.pushFields
-        local isChainField = false
-        if type(pushTable) == "table" and pushTable[fieldName] then
-            isChainField = true
-        elseif pCfg.targetField and fieldName == pCfg.targetField then
-            isChainField = true
-        end
-
-        if isChainField then
-            table.insert(chainShrooms, entry)
-        end
-
-        if pCfg.targetField and fieldName == pCfg.targetField then
-            table.insert(targetFieldShrooms, entry)
+        if data.field == targetFieldName or pushFields[data.field] then
+            table.insert(chainShrooms, data)
         end
     end
 
     if #allShrooms == 0 then
-        lockedChainActive = false
         return nil
     end
 
-    -- 2. ПРИОРИТЕТ 1: Экстренная редкость (Legendary/Mythic)
-    local emergencyShroom = nil
+    -- 1. ЭКСТРЕННАЯ РЕДКОСТЬ (Legendary / Mythic по всей карте)
+    local emergency = nil
     for _, s in ipairs(allShrooms) do
         if s.rVal >= interceptRarityVal then
-            if not emergencyShroom 
-                or s.rVal > emergencyShroom.rVal 
-                or (s.rVal == emergencyShroom.rVal and s.lvl > emergencyShroom.lvl)
-                or (s.rVal == emergencyShroom.rVal and s.lvl == emergencyShroom.lvl and s.d < emergencyShroom.d) then
-                emergencyShroom = s
+            if not emergency or s.rVal > emergency.rVal or (s.rVal == emergency.rVal and s.lvl > emergency.lvl) then
+                emergency = s
             end
         end
     end
-
-    if emergencyShroom then
-        return emergencyShroom.v, emergencyShroom.rarity, emergencyShroom.lvl
+    if emergency then
+        return emergency.v, emergency.rarity, emergency.lvl, emergency.stemPos, emergency.field
     end
 
-    -- 3. ПРИОРИТЕТ 2: Проверка и фиксация на полях цепочки
-    local minLvlThreshold = pCfg.targetFieldMinLvl or 4
-    local chainHasHighLvl = false
-
-    for _, s in ipairs(chainShrooms) do
-        if s.lvl >= minLvlThreshold then
-            chainHasHighLvl = true
-            break
-        end
+    -- 2. ЦЕЛЕВОЕ ПОЛЕ (Pumpkin Patch) — максимальный приоритет
+    if #targetShrooms > 0 then
+        table.sort(targetShrooms, function(a, b)
+            if a.rVal ~= b.rVal then return a.rVal > b.rVal end
+            if a.lvl ~= b.lvl then return a.lvl > b.lvl end
+            return a.d < b.d
+        end)
+        local best = targetShrooms[1]
+        return best.v, best.rarity, best.lvl, best.stemPos, best.field
     end
 
-    if chainHasHighLvl then
-        lockedChainActive = true
-    end
-
-    if lockedChainActive and #chainShrooms > 0 then
-        if #targetFieldShrooms > 0 then
-            table.sort(targetFieldShrooms, function(a, b)
-                if a.rVal ~= b.rVal then return a.rVal > b.rVal end
-                if a.lvl ~= b.lvl then return a.lvl > b.lvl end
-                return a.d < b.d
-            end)
-            local chosen = targetFieldShrooms[1]
-            return chosen.v, chosen.rarity, chosen.lvl
-        end
-
+    -- 3. ПОЛЯ ЦЕПОЧКИ (Ёлка, Кактус и т.д.) — бьем их, чтобы не улетать на перец
+    if #chainShrooms > 0 then
         table.sort(chainShrooms, function(a, b)
             if a.rVal ~= b.rVal then return a.rVal > b.rVal end
             if a.lvl ~= b.lvl then return a.lvl > b.lvl end
             return a.d < b.d
         end)
-        local chosenChain = chainShrooms[1]
-        return chosenChain.v, chosenChain.rarity, chosenChain.lvl
-    else
-        lockedChainActive = false
+        local best = chainShrooms[1]
+        return best.v, best.rarity, best.lvl, best.stemPos, best.field
     end
 
-    -- 4. ПРИОРИТЕТ 3: Обычный поиск по всей карте
-    local minLvl = pCfg.min or 1
-    local maxLvl = pCfg.max or 25
-
-    local validShrooms = {}
-    for _, s in ipairs(allShrooms) do
-        if s.lvl >= minLvl and s.lvl <= maxLvl and s.rVal >= minCfgRarityVal then
-            table.insert(validShrooms, s)
-        end
-    end
-    if #validShrooms == 0 then validShrooms = allShrooms end
-
-    table.sort(validShrooms, function(a, b)
-        local pushTable = pCfg.pushFields
-        local aChain = (type(pushTable) == "table" and pushTable[a.field]) or false
-        local bChain = (type(pushTable) == "table" and pushTable[b.field]) or false
-
-        if aChain ~= bChain then return aChain == true end
+    -- 4. Любые другие грибы на карте
+    table.sort(allShrooms, function(a, b)
         if a.rVal ~= b.rVal then return a.rVal > b.rVal end
         if a.lvl ~= b.lvl then return a.lvl > b.lvl end
         return a.d < b.d
     end)
-
-    local best = validShrooms[1]
-    return best.v, best.rarity, best.lvl
+    local best = allShrooms[1]
+    return best.v, best.rarity, best.lvl, best.stemPos, best.field
 end
 
-local farmPuffshroom
+_G.findPuffshroom = findPuffshroom
 
 farmPuffshroom = function(v119)
-    local puffshroom, puffRarity, puffLevel = findPuffshroom(v119)
-    if not puffshroom then
-        return
-    end
-
-    local stem = puffshroom:FindFirstChild("Puffball Stem")
-    if not stem then
-        tracked.puffshrooms[puffshroom] = nil
-        return
-    end
-
-    local position2 = stem.Position
-    local field = getFieldAt(position2)
-
-    if not field or not availableFields[field.Name] then
-        tracked.puffshrooms[puffshroom] = nil
-        return
-    end
-
-    if not (field.Name ~= "Coconut Field" or mobCooldown(monsterSpawners.CoconutCrab)) then
-        logger.log("Puffshroom: Cannot farm in Coconut Field: Coconut Crab is alive")
-        tracked.puffshrooms[puffshroom] = nil
-        return
-    end
-
-    -- Блокируем прерывания бота сторонними задачами
-    state.farmingPuffshrooms = true
-
-    logger.log(puffRarity, "Puffshroom (lvl:", puffLevel .. "): Found in", field.Name)
-    setField(field.Name)
-
-    if not (not cfg.convert.autoHoneyMask and not cfg.combat.demonmask or not (cfg.vars.movement == "Tween" or cfg.convert.defaultMask ~= "Demon Mask")) then
-        if not localPlayer.Character:FindFirstChild(cfg.convert.defaultMask) then
-            equipAccessory(cfg.convert.defaultMask)
-        end
-    end
-
-    if getFieldAt(getRootPart().Position) ~= field then
-        goTo(position2, field.Name)
-    end
-
-    walkTo(position2, true, 10)
-
-    if not (not cfg.autofarm.autosprinkler or farmState.field == field.Name) then
-        farmState:Place({ position2 })
-        farmState.field = field.Name
-    end
-
-    local farmOptions = { loot = true, origin = position2, range = 25 }
-    local now = os.clock()
-    local exitTo = nil
-
     while true do
-        if not puffshroom.Parent or not (os.clock() - now < 300) then
-            exitTo = 1
-            break
-        end
+        local puff, rarity, lvl, stemPos, fieldName = findPuffshroom(v119)
 
-        if not RunService.Heartbeat:Wait() then
-            exitTo = 1
-            break
-        end
+        if not puff then
+            -- Ждем до 3 секунд на месте, пока споры упадут и прорастут
+            local waitTimer = os.clock()
+            while os.clock() - waitTimer < 3 do
+                task.wait(0.2)
+                puff, rarity, lvl, stemPos, fieldName = findPuffshroom(v119)
+                if puff then break end
+            end
 
-        -- ПРОВЕРКА ПЕРЕХВАТА РЕДКОСТИ:
-        local newTarget, newRarity, newLvl = findPuffshroom(v119)
-        if newTarget and newTarget ~= puffshroom then
-            local rarityValues = { Common = 1, Rare = 2, Epic = 3, Legendary = 4, Mythic = 5 }
-            local curRVal = rarityValues[puffRarity] or 1
-            local newRVal = rarityValues[newRarity] or 1
-            local interceptRVal = (cfg.puffshrooms and rarityValues[cfg.puffshrooms.interceptRarity]) or 4
-
-            if newRVal >= interceptRVal and curRVal < newRVal then
-                logger.log("Switching to higher rarity Puffshroom:", newRarity)
-                break
+            -- Если грибов на карте вообще нет — только тогда выходим в обычный фарм
+            if not puff then
+                state.farmingPuffshrooms = nil
+                return
             end
         end
+
+        state.farmingPuffshrooms = true
+        logger.log(rarity, "Puffshroom (lvl:", lvl .. "): Farming in", fieldName)
+        setField(fieldName)
 
         if not (not cfg.convert.autoHoneyMask and not cfg.combat.demonmask or not (cfg.vars.movement == "Tween" or cfg.convert.defaultMask ~= "Demon Mask")) then
             if not localPlayer.Character:FindFirstChild(cfg.convert.defaultMask) then
@@ -56271,33 +56126,66 @@ farmPuffshroom = function(v119)
             end
         end
 
-        if getFieldAt(getRootPart().Position) ~= field then
-            goTo(position2, field.Name)
+        if getFieldAt(getRootPart().Position) ~= workspace.FlowerZones[fieldName] then
+            goTo(stemPos, fieldName)
         end
 
-        if cfg.face.shiftlock then
-            input:handleShiftLock(true)
+        walkTo(stemPos, true, 10)
+
+        if not (not cfg.autofarm.autosprinkler or farmState.field == fieldName) then
+            farmState:Place({ stemPos })
+            farmState.field = fieldName
         end
 
-        reportStatus(3)
-        farmStep(farmOptions)
+        local farmOptions = { loot = true, origin = stemPos, range = 25 }
+        local now = os.clock()
+
+        while true do
+            if not puff.Parent or (os.clock() - now >= 300) then
+                break
+            end
+
+            if not RunService.Heartbeat:Wait() then
+                break
+            end
+
+            -- Проверка на перехват редкого гриба
+            local newPuff, newRarity, newLvl = findPuffshroom(v119)
+            if newPuff and newPuff ~= puff then
+                local rarityValues = { Common = 1, Rare = 2, Epic = 3, Legendary = 4, Mythic = 5 }
+                local curVal = rarityValues[rarity] or 1
+                local newVal = rarityValues[newRarity] or 1
+                local intVal = (cfg.puffshrooms and rarityValues[cfg.puffshrooms.interceptRarity]) or 4
+
+                if newVal >= intVal and curVal < newVal then
+                    logger.log("Intercepting higher rarity Puffshroom:", newRarity)
+                    break
+                end
+            end
+
+            if getFieldAt(getRootPart().Position) ~= workspace.FlowerZones[fieldName] then
+                goTo(stemPos, fieldName)
+            end
+
+            if cfg.face.shiftlock then
+                input:handleShiftLock(true)
+            end
+
+            reportStatus(3)
+            farmStep(farmOptions)
+        end
+
+        -- Сбор лута
+        if os.clock() - now < 300 then
+            farmFor(farmOptions, rarity ~= "Common" and rarity ~= "Rare" and 8 or 4, 2)
+        end
+
+        tracked.puffshrooms[puff] = nil
     end
 
     state.farmingPuffshrooms = nil
-
-    if exitTo ~= 1 then
-        farmPuffshroom(v119)
-        return
-    end
-
-    if os.clock() - now >= 300 then
-        tracked.puffshrooms[puffshroom] = nil
-    else
-        farmFor(farmOptions, puffRarity ~= "Common" and puffRarity ~= "Rare" and 14 or 8, puffRarity ~= "Common" and puffRarity ~= "Rare" and 6 or 2)
-    end
 end
 
--- Делаем функцию глобально доступной, чтобы строки 61k и 63k никогда не получали nil
 _G.farmPuffshroom = farmPuffshroom
 
 
@@ -68003,4 +67891,3 @@ handleAmuletPopup = nil
 nextMoveTime = nil
 collectObject = nil
 LPH_CRASH()
-  
