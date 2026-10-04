@@ -56026,10 +56026,11 @@ findPuffshroom = function(v119)
 
     local pCfg = (cfg and cfg.puffshrooms) or {}
     local interceptRarityVal = rarityValues[pCfg.interceptRarity] or 4
-    local targetFieldName = pCfg.targetField or "Pumpkin Patch"
+    
+    -- Жестко страхуем имя поля от опечаток и nil
+    local targetFieldName = tostring(pCfg.targetField or "Pumpkin Patch")
     local pushFields = pCfg.pushFields or {}
 
-    -- Быстрая синхронизация с воркспейсом
     local puffFolder = workspace:FindFirstChild("Happenings") and workspace.Happenings:FindFirstChild("Puffshrooms")
     if puffFolder then
         for _, child in ipairs(puffFolder:GetChildren()) do
@@ -56050,10 +56051,9 @@ findPuffshroom = function(v119)
 
         table.insert(allShrooms, data)
 
-        -- Грибы строго на Пампкине
-        if data.field == targetFieldName then
+        -- Строгая проверка совпадения целевого поля
+        if string.find(data.field, targetFieldName) or data.field == targetFieldName then
             table.insert(targetShrooms, data)
-        -- Грибы на Ёлке и Кактусе (без Пампкина!)
         elseif pushFields[data.field] then
             table.insert(pushShrooms, data)
         end
@@ -56063,7 +56063,7 @@ findPuffshroom = function(v119)
         return nil
     end
 
-    -- 1. ЭКСТРЕННЫЙ ПЕРЕХВАТ (Легендарные и Мифические по всей карте)
+    -- 1. ЭКСТРЕННАЯ РЕДКОСТЬ: Только Mythic / Legendary могут сорвать с базы
     local emergency = nil
     for _, s in ipairs(allShrooms) do
         if s.rVal >= interceptRarityVal then
@@ -56076,8 +56076,8 @@ findPuffshroom = function(v119)
         return emergency.v, emergency.rarity, emergency.lvl, emergency.stemPos, emergency.field
     end
 
-    -- 2. ЖЕЛЕЗНЫЙ ЛОК НА ПАМПКИНЕ (Target Field):
-    -- Если на Пампкине есть ХОТЯ БЫ ОДИН гриб (любого лвла), бот бьет его и НЕ СМОТРИТ на Ёлку!
+    -- 2. ЖЕЛЕЗОБЕТОННЫЙ ЛОК: Если на Пампкине есть ХОТЯ БЫ ОДИН гриб (любого лвла),
+    -- мы ВООБЩЕ ИГНОРИРУЕМ Кактус, даже если там 8, 10 или 15 лвл!
     if #targetShrooms > 0 then
         table.sort(targetShrooms, function(a, b)
             if a.rVal ~= b.rVal then return a.rVal > b.rVal end
@@ -56088,8 +56088,7 @@ findPuffshroom = function(v119)
         return best.v, best.rarity, best.lvl, best.stemPos, best.field
     end
 
-    -- 3. ПОЛЯ РАЗГОНА (Кактус / Ёлка):
-    -- Летим сюда ТОЛЬКО тогда, когда на Пампкине 0 грибов!
+    -- 3. ТОЛЬКО ЕСЛИ НА ПАМПКИНЕ ПУСТОТА (0 грибов) — летим на Кактус/Ёлку
     if #pushShrooms > 0 then
         table.sort(pushShrooms, function(a, b)
             if a.rVal ~= b.rVal then return a.rVal > b.rVal end
