@@ -56026,8 +56026,9 @@ findPuffshroom = function(v119)
     local interceptRarityVal = rarityValues[pCfg.interceptRarity] or 4
     local targetFieldName = pCfg.targetField or "Pumpkin Patch"
     local pushFields = pCfg.pushFields or {}
+    local minThresholdLvl = pCfg.targetFieldMinLvl or 4
 
-    -- СИНХРОНИЗАЦИЯ: принудительно заносим все объекты из воркспейса
+    -- Принудительно подтягиваем грибы из воркспейса
     local puffFolder = workspace:FindFirstChild("Happenings") and workspace.Happenings:FindFirstChild("Puffshrooms")
     if puffFolder then
         for _, child in ipairs(puffFolder:GetChildren()) do
@@ -56036,8 +56037,9 @@ findPuffshroom = function(v119)
     end
 
     local allShrooms = {}
-    local chainShrooms = {}
     local targetShrooms = {}
+    local pushShrooms = {}
+    local hasTriggerInPush = false
 
     for k in pairs(tracked.puffshrooms) do
         local data = getPuffData(k)
@@ -56048,12 +56050,18 @@ findPuffshroom = function(v119)
 
         table.insert(allShrooms, data)
 
+        -- Грибы на твоем основном поле (Pumpkin Patch)
         if data.field == targetFieldName then
             table.insert(targetShrooms, data)
         end
 
-        if data.field == targetFieldName or pushFields[data.field] then
-            table.insert(chainShrooms, data)
+        -- Грибы на соседних полях цепочки (Ёлка, Кактус)
+        if pushFields[data.field] and data.field ~= targetFieldName then
+            table.insert(pushShrooms, data)
+            -- Проверяем условие: есть ли в Push Fields гриб нужного уровня
+            if data.lvl >= minThresholdLvl then
+                hasTriggerInPush = true
+            end
         end
     end
 
@@ -56061,7 +56069,7 @@ findPuffshroom = function(v119)
         return nil
     end
 
-    -- 1. ЭКСТРЕННЫЙ ПЕРЕХВАТ (Legendary / Mythic по всей карте)
+    -- 1. ПРИОРИТЕТ 1: Экстренная редкость (Legendary / Mythic по всей карте)
     local emergency = nil
     for _, s in ipairs(allShrooms) do
         if s.rVal >= interceptRarityVal then
@@ -56074,7 +56082,20 @@ findPuffshroom = function(v119)
         return emergency.v, emergency.rarity, emergency.lvl, emergency.stemPos, emergency.field
     end
 
-    -- 2. ЦЕЛЕВОЕ ПОЛЕ (Pumpkin Patch)
+    -- 2. ПРИОРИТЕТ 2: УДЕРЖАНИЕ НА БАЗЕ (Твое условие)
+    -- Если на Кактусе/Ёлке есть гриб >= targetFieldMinLvl (например 9 лвл),
+    -- И на Пампкине есть ХОТЬ ОДИН гриб (любого лвла) -> ЖЕЛЕЗНО остаемся на Пампкине!
+    if hasTriggerInPush and #targetShrooms > 0 then
+        table.sort(targetShrooms, function(a, b)
+            if a.rVal ~= b.rVal then return a.rVal > b.rVal end
+            if a.lvl ~= b.lvl then return a.lvl > b.lvl end
+            return a.d < b.d
+        end)
+        local best = targetShrooms[1]
+        return best.v, best.rarity, best.lvl, best.stemPos, best.field
+    end
+
+    -- 3. Если условия удержания нет, но на целевом поле просто есть грибы:
     if #targetShrooms > 0 then
         table.sort(targetShrooms, function(a, b)
             if a.rVal ~= b.rVal then return a.rVal > b.rVal end
@@ -56085,18 +56106,18 @@ findPuffshroom = function(v119)
         return best.v, best.rarity, best.lvl, best.stemPos, best.field
     end
 
-    -- 3. ПОЛЯ ЦЕПОЧКИ (Кактус, Ёлка и т.д.)
-    if #chainShrooms > 0 then
-        table.sort(chainShrooms, function(a, b)
+    -- 4. На Пампкине абсолютно пусто -> летим помогать на соседние поля (Кактус / Ёлка)
+    if #pushShrooms > 0 then
+        table.sort(pushShrooms, function(a, b)
             if a.rVal ~= b.rVal then return a.rVal > b.rVal end
             if a.lvl ~= b.lvl then return a.lvl > b.lvl end
             return a.d < b.d
         end)
-        local best = chainShrooms[1]
+        local best = pushShrooms[1]
         return best.v, best.rarity, best.lvl, best.stemPos, best.field
     end
 
-    -- 4. Остальные грибы на карте
+    -- 5. Остальные поля
     table.sort(allShrooms, function(a, b)
         if a.rVal ~= b.rVal then return a.rVal > b.rVal end
         if a.lvl ~= b.lvl then return a.lvl > b.lvl end
