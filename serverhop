@@ -1,0 +1,530 @@
+-- SrvHop is controlled by other scripts (the farm script sets it true only when there is nothing to farm).
+-- Default to true only if nobody has set it yet.
+if getgenv().SrvHop == nil then
+    getgenv().SrvHop = true
+end
+
+getgenv().Config = {
+    ApiCooldown = 3,
+    TeleportCooldown = 0.5,
+    PageExpireTime = 3600,
+    CheckAlive = true, -- verify a server is still alive/not full before teleporting
+    FreshTime = 20,    -- seconds a server entry is trusted without re-checking
+}
+
+if getgenv().SrvHopThread then
+    pcall(task.cancel, getgenv().SrvHopThread)
+    getgenv().SrvHopThread = nil
+end
+
+if getgenv().SrvHopUnload then
+    pcall(getgenv().SrvHopUnload)
+end
+
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local CoreGui = game:GetService("CoreGui")
+
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer.Character then LocalPlayer.CharacterAdded:Wait() end
+
+local PlaceId, JobId, Config = game.PlaceId, game.JobId, getgenv().Config
+local MainFolder = "SrvHop"
+local PlaceFolder = MainFolder .. "/" .. PlaceId
+
+if makefolder then
+    if not isfolder(MainFolder) then makefolder(MainFolder) end
+    if not isfolder(PlaceFolder) then makefolder(PlaceFolder) end
+end
+
+local CacheFile = PlaceFolder .. "/Cache.json"
+local StatsFile = PlaceFolder .. "/Stats.json"
+local BlacklistFile = PlaceFolder .. "/Blacklist.json"
+
+local IsRunning, SignalConnections, ServerPool, BlacklistTable = true, {}, {}, {}
+local BlacklistCount = 0
+local NextCursor, CurrentPage, PendingTargetId, PageParsedAt, LastSaveTime = "", 1, nil, 0, 0
+local SessionStats = {Parsed = 0, Invalid = 0, Dead = 0, RateLimits = 0, Visited = 0, LastJobId = ""}
+local PageCheckCache = {} -- cursor -> { time = , live = { [serverId] = serverObj } }
+local LastApiCall = 0
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "SrvHopUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = pcall(function() return CoreGui end) and CoreGui or LocalPlayer:WaitForChild("PlayerGui")
+
+local MainFrame = Instance.new("Frame", ScreenGui)
+MainFrame.Size = UDim2.new(0, 320, 0, 275)
+MainFrame.Position = UDim2.new(0, 20, 0.5, -130)
+MainFrame.BackgroundColor3 = Color3.fromRGB(18, 20, 26)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Draggable = true
+
+local MainCorner = Instance.new("UICorner", MainFrame)
+MainCorner.CornerRadius = UDim.new(0, 8)
+local MainStroke = Instance.new("UIStroke", MainFrame)
+MainStroke.Color = Color3.fromRGB(38, 42, 54)
+
+local TopBar = Instance.new("Frame", MainFrame)
+TopBar.Size = UDim2.new(1, 0, 0, 36)
+TopBar.BackgroundColor3 = Color3.fromRGB(24, 27, 36)
+TopBar.BorderSizePixel = 0
+
+local TopCorner = Instance.new("UICorner", TopBar)
+TopCorner.CornerRadius = UDim.new(0, 8)
+
+local StatusDot = Instance.new("Frame", TopBar)
+StatusDot.Size = UDim2.new(0, 8, 0, 8)
+StatusDot.Position = UDim2.new(0, 12, 0.5, -4)
+StatusDot.BackgroundColor3 = Color3.fromRGB(46, 204, 113)
+StatusDot.BorderSizePixel = 0
+
+local DotCorner = Instance.new("UICorner", StatusDot)
+DotCorner.CornerRadius = UDim.new(1, 0)
+
+local TitleLabel = Instance.new("TextLabel", TopBar)
+TitleLabel.Size = UDim2.new(1, -26, 1, 0)
+TitleLabel.Position = UDim2.new(0, 26, 0, 0)
+TitleLabel.Text = "SrvHop Manager"
+TitleLabel.TextColor3 = Color3.fromRGB(240, 243, 246)
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextSize = 13
+TitleLabel.BackgroundTransparency = 1
+
+local ContentFrame = Instance.new("Frame", MainFrame)
+ContentFrame.Size = UDim2.new(1, -20, 1, -46)
+ContentFrame.Position = UDim2.new(0, 10, 0, 40)
+ContentFrame.BackgroundTransparency = 1
+
+local StatsContainer = Instance.new("Frame", ContentFrame)
+StatsContainer.Size = UDim2.new(1, 0, 0, 160)
+StatsContainer.BackgroundColor3 = Color3.fromRGB(24, 27, 36)
+StatsContainer.BorderSizePixel = 0
+
+local StatsCorner = Instance.new("UICorner", StatsContainer)
+StatsCorner.CornerRadius = UDim.new(0, 6)
+
+local StatsLabel = Instance.new("TextLabel", StatsContainer)
+StatsLabel.Size = UDim2.new(1, -16, 1, -12)
+StatsLabel.Position = UDim2.new(0, 8, 0, 6)
+StatsLabel.TextColor3 = Color3.fromRGB(160, 170, 185)
+StatsLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatsLabel.TextYAlignment = Enum.TextYAlignment.Top
+StatsLabel.Font = Enum.Font.GothamMedium
+StatsLabel.TextSize = 11
+StatsLabel.LineHeight = 1.15
+StatsLabel.BackgroundTransparency = 1
+
+local LogContainer = Instance.new("Frame", ContentFrame)
+LogContainer.Size = UDim2.new(1, 0, 0, 54)
+LogContainer.Position = UDim2.new(0, 0, 0, 167)
+LogContainer.BackgroundColor3 = Color3.fromRGB(14, 16, 20)
+LogContainer.BorderSizePixel = 0
+
+local LogCorner = Instance.new("UICorner", LogContainer)
+LogCorner.CornerRadius = UDim.new(0, 6)
+
+local LogLabel = Instance.new("TextLabel", LogContainer)
+LogLabel.Size = UDim2.new(1, -12, 1, -8)
+LogLabel.Position = UDim2.new(0, 6, 0, 4)
+LogLabel.Text = "[SYS] Initialized."
+LogLabel.TextColor3 = Color3.fromRGB(110, 120, 135)
+LogLabel.TextXAlignment = Enum.TextXAlignment.Left
+LogLabel.TextYAlignment = Enum.TextYAlignment.Top
+LogLabel.Font = Enum.Font.Code
+LogLabel.TextSize = 10
+LogLabel.TextWrapped = true
+LogLabel.BackgroundTransparency = 1
+
+getgenv().SrvHopUnload = function()
+    IsRunning = false
+    for idx = 1, #SignalConnections do
+        if SignalConnections[idx] then pcall(function() SignalConnections[idx]:Disconnect() end) end
+    end
+    table.clear(SignalConnections)
+    table.clear(ServerPool)
+    table.clear(BlacklistTable)
+    table.clear(PageCheckCache)
+    BlacklistCount = 0
+    if ScreenGui then ScreenGui:Destroy() end
+end
+
+local function SafeWrite(filePath, rawData)
+    if not writefile then return end
+    local isOk, encoded = pcall(HttpService.JSONEncode, HttpService, rawData)
+    if isOk and encoded then
+        writefile(filePath, encoded)
+    end
+end
+
+local function SafeRead(filePath)
+    if isfile and readfile and isfile(filePath) then
+        local isOk, content = pcall(readfile, filePath)
+        if isOk and content then
+            local decOk, decData = pcall(HttpService.JSONDecode, HttpService, content)
+            if decOk and type(decData) == "table" then return decData end
+        end
+    end
+    return nil
+end
+
+-- Pool entries are tables { id, playing, max, cursor, t }. Old caches stored plain strings.
+local function NormalizeEntry(entry)
+    if type(entry) == "table" then return entry.id and entry or nil end
+    if type(entry) == "string" then return { id = entry, t = 0 } end
+    return nil
+end
+
+local function SavePersistentData(forceSave)
+    local nowTime = workspace:GetServerTimeNow()
+    if not forceSave and (nowTime - LastSaveTime < 10) then return end
+    LastSaveTime = nowTime
+
+    SafeWrite(CacheFile, ServerPool)
+    SafeWrite(BlacklistFile, BlacklistTable)
+    SafeWrite(StatsFile, {
+        Cursor = NextCursor,
+        Page = CurrentPage,
+        Parsed = SessionStats.Parsed,
+        Invalid = SessionStats.Invalid,
+        Dead = SessionStats.Dead,
+        RateLimits = SessionStats.RateLimits,
+        Visited = SessionStats.Visited,
+        LastJobId = SessionStats.LastJobId,
+        PageParsedAt = PageParsedAt
+    })
+end
+
+local function CleanBlacklist()
+    local nowTime = workspace:GetServerTimeNow()
+    for serverId, addedTime in pairs(BlacklistTable) do
+        -- Never drop the current JobId from the blacklist while we are still on it
+        if serverId ~= JobId and (nowTime - addedTime) > Config.PageExpireTime then
+            BlacklistTable[serverId] = nil
+            BlacklistCount = math.max(0, BlacklistCount - 1)
+        end
+    end
+end
+
+local function IsBlacklisted(serverId)
+    if not serverId then return true end
+    local addedTime = BlacklistTable[serverId]
+    if not addedTime then return false end
+
+    if serverId ~= JobId and (workspace:GetServerTimeNow() - addedTime) > Config.PageExpireTime then
+        BlacklistTable[serverId] = nil
+        BlacklistCount = math.max(0, BlacklistCount - 1)
+        return false
+    end
+    return true
+end
+
+local function AddToBlacklist(serverId)
+    if serverId and type(serverId) == "string" and #serverId > 0 then
+        if not BlacklistTable[serverId] then
+            BlacklistCount = BlacklistCount + 1
+        end
+        BlacklistTable[serverId] = workspace:GetServerTimeNow()
+    end
+end
+
+local function ResetCycle()
+    NextCursor, CurrentPage, PageParsedAt = "", 1, 0
+    table.clear(ServerPool)
+    table.clear(BlacklistTable)
+    table.clear(PageCheckCache)
+    BlacklistCount = 0
+    SessionStats.Invalid, SessionStats.Dead, SessionStats.Parsed, SessionStats.Visited = 0, 0, 0, 1
+    SessionStats.LastJobId = JobId
+
+    -- Put the current server back into the blacklist after the table reset
+    AddToBlacklist(JobId)
+
+    if isfile and delfile then
+        if isfile(CacheFile) then pcall(delfile, CacheFile) end
+        if isfile(BlacklistFile) then pcall(delfile, BlacklistFile) end
+        if isfile(StatsFile) then pcall(delfile, StatsFile) end
+    end
+end
+
+local function UpdateUI(logMessage)
+    if not IsRunning then return end
+
+    if logMessage then LogLabel.Text = "> " .. tostring(logMessage) end
+
+    CleanBlacklist()
+
+    local timeRemainingText = "N/A"
+    if PageParsedAt > 0 then
+        local remainingSec = math.max(0, math.floor(Config.PageExpireTime - (workspace:GetServerTimeNow() - PageParsedAt)))
+        timeRemainingText = string.format("%02d:%02d", math.floor(remainingSec / 60), remainingSec % 60)
+    end
+
+    StatsLabel.Text = string.format("Visited: %d\nParsed: %d\nValid Queue: %d\nInvalid: %d\nDead/full skipped: %d\nBlacklisted: %d\nRateLimits: %d\nCurrent Page: %d\nPage Expire in: %s",
+        SessionStats.Visited, SessionStats.Parsed, #ServerPool, SessionStats.Invalid, SessionStats.Dead, BlacklistCount, SessionStats.RateLimits, CurrentPage, timeRemainingText)
+end
+
+local function CleanQueueFromBlacklist()
+    for idx = #ServerPool, 1, -1 do
+        local serverEntry = NormalizeEntry(ServerPool[idx])
+        local serverId = serverEntry and serverEntry.id
+        if not serverId or serverId == JobId or IsBlacklisted(serverId) then
+            table.remove(ServerPool, idx)
+        else
+            ServerPool[idx] = serverEntry
+        end
+    end
+end
+
+local function LoadPersistentData()
+    local loadedBlacklist = SafeRead(BlacklistFile)
+    if loadedBlacklist then
+        BlacklistTable = loadedBlacklist
+        BlacklistCount = 0
+        for _ in pairs(BlacklistTable) do
+            BlacklistCount = BlacklistCount + 1
+        end
+    end
+
+    local loadedStats = SafeRead(StatsFile)
+    if loadedStats then
+        NextCursor = loadedStats.Cursor or ""
+        CurrentPage = loadedStats.Page or 1
+        SessionStats.Parsed = loadedStats.Parsed or 0
+        SessionStats.Invalid = loadedStats.Invalid or 0
+        SessionStats.Dead = loadedStats.Dead or 0
+        SessionStats.Visited = loadedStats.Visited or 0
+        SessionStats.RateLimits = loadedStats.RateLimits or 0
+        SessionStats.LastJobId = loadedStats.LastJobId or ""
+        PageParsedAt = loadedStats.PageParsedAt or 0
+    end
+
+    local loadedCache = SafeRead(CacheFile)
+    local hasCache = false
+
+    if loadedCache and #loadedCache > 0 then
+        ServerPool = loadedCache
+        hasCache = true
+    end
+
+    if SessionStats.LastJobId ~= JobId then
+        SessionStats.Visited = SessionStats.Visited + 1
+        SessionStats.LastJobId = JobId
+    end
+
+    AddToBlacklist(JobId)
+    CleanBlacklist()
+    CleanQueueFromBlacklist()
+
+    UpdateUI(hasCache and ("Cache restored. Queue: " .. #ServerPool) or "No cache found.")
+    return hasCache
+end
+
+-- Requests one page of the public server list. Returns the decoded table or nil on failure.
+local function RequestPage(cursor)
+    cursor = cursor or ""
+    local apiUrl = string.format("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100%s", PlaceId, (cursor ~= "" and "&cursor=" .. cursor or ""))
+    LastApiCall = workspace:GetServerTimeNow()
+
+    local reqSuccess, httpResponse = pcall(game.HttpGet, game, apiUrl)
+    if not reqSuccess or type(httpResponse) ~= "string" or not httpResponse:find("^{") then
+        return nil
+    end
+
+    local decodeSuccess, parsedData = pcall(HttpService.JSONDecode, HttpService, httpResponse)
+    if not decodeSuccess or type(parsedData) ~= "table" or not parsedData.data then
+        return nil
+    end
+    return parsedData
+end
+
+-- Checks that a queued server is still alive and has a free slot.
+-- Re-reads the page the server came from (once per FreshTime per page) and looks for the server in it.
+-- If the page cannot be re-read (rate limit etc.) the server is treated as "unknown" and we still try it;
+-- TeleportInitFailed will blacklist it if it is really dead.
+local function ValidateEntry(entry)
+    if not Config.CheckAlive or entry.cursor == nil then return true end
+
+    local now = workspace:GetServerTimeNow()
+    if entry.t and (now - entry.t) < Config.FreshTime then return true end
+
+    local cache = PageCheckCache[entry.cursor]
+    if not cache or (now - cache.time) > Config.FreshTime then
+        local waitTime = Config.ApiCooldown - (now - LastApiCall)
+        if waitTime > 0 then task.wait(waitTime) end
+        if not IsRunning then return false end
+
+        UpdateUI("Checking if server is alive...")
+        local data = RequestPage(entry.cursor)
+        if not data then
+            SessionStats.RateLimits = SessionStats.RateLimits + 1
+            return true
+        end
+
+        local live = {}
+        for idx = 1, #data.data do
+            local serverObj = data.data[idx]
+            if serverObj.id then live[serverObj.id] = serverObj end
+        end
+        cache = { time = workspace:GetServerTimeNow(), live = live }
+        PageCheckCache[entry.cursor] = cache
+    end
+
+    local serverObj = cache.live[entry.id]
+    if not serverObj then return false end -- server is gone
+    if serverObj.playing and serverObj.maxPlayers and serverObj.playing >= serverObj.maxPlayers then
+        return false -- server is full
+    end
+
+    entry.t = cache.time
+    return true
+end
+
+local function FetchPage()
+    while not getgenv().SrvHop and IsRunning do task.wait(0.5) end
+    if not IsRunning then return false end
+
+    UpdateUI("Fetching API (Page " .. CurrentPage .. ")...")
+    local pageCursor = NextCursor
+    local parsedData = RequestPage(pageCursor)
+
+    if not parsedData then
+        SessionStats.RateLimits = SessionStats.RateLimits + 1
+        UpdateUI("Rate limited / API error.")
+        SavePersistentData(false)
+        task.wait(5)
+        return false
+    end
+
+    NextCursor = parsedData.nextPageCursor or ""
+    local addedCount = 0
+    PageParsedAt = workspace:GetServerTimeNow()
+
+    for idx = 1, #parsedData.data do
+        local serverObj = parsedData.data[idx]
+        local serverId = serverObj.id
+        local isFull = serverObj.playing and serverObj.maxPlayers and serverObj.playing >= serverObj.maxPlayers
+        if serverId and serverId ~= JobId and not isFull and not IsBlacklisted(serverId) then
+            SessionStats.Parsed = SessionStats.Parsed + 1
+            table.insert(ServerPool, {
+                id = serverId,
+                playing = serverObj.playing,
+                max = serverObj.maxPlayers,
+                cursor = pageCursor,
+                t = PageParsedAt
+            })
+            addedCount = addedCount + 1
+        end
+    end
+
+    parsedData = nil
+
+    SavePersistentData(true)
+    UpdateUI("Page " .. CurrentPage .. " parsed. Added: " .. addedCount)
+    return true
+end
+
+local function ProcessCurrentPool()
+    while IsRunning and #ServerPool > 0 do
+        while not getgenv().SrvHop and IsRunning do task.wait(0.5) end
+        if not IsRunning then break end
+
+        if PageParsedAt > 0 and (workspace:GetServerTimeNow() - PageParsedAt) > Config.PageExpireTime then
+            UpdateUI("Page expired (>1h). Resetting cache & stats...")
+            ResetCycle()
+            SavePersistentData(true)
+            break
+        end
+
+        local targetEntry = NormalizeEntry(table.remove(ServerPool, 1))
+        local targetId = targetEntry and targetEntry.id
+
+        if targetId and not IsBlacklisted(targetId) and targetId ~= JobId then
+            if ValidateEntry(targetEntry) then
+                if not IsRunning then break end
+                if not getgenv().SrvHop then
+                    -- hopping was paused while we were checking; keep the server for later
+                    table.insert(ServerPool, 1, targetEntry)
+                else
+                    PendingTargetId = targetId
+                    SavePersistentData(true)
+                    UpdateUI(string.format("TP to %s...", targetId:sub(1, 8)))
+
+                    pcall(TeleportService.TeleportToPlaceInstance, TeleportService, PlaceId, targetId, LocalPlayer)
+                    task.wait(Config.TeleportCooldown)
+                end
+            else
+                AddToBlacklist(targetId)
+                SessionStats.Dead = SessionStats.Dead + 1
+                SavePersistentData(true)
+                UpdateUI(string.format("Server %s is dead/full, skipped.", targetId:sub(1, 8)))
+            end
+        else
+            UpdateUI("Skipped blacklisted server.")
+        end
+    end
+end
+
+table.insert(SignalConnections, TeleportService.TeleportInitFailed:Connect(function(playerObj, teleportResult, errorMessage)
+    if playerObj == LocalPlayer and IsRunning then
+        SessionStats.Invalid = SessionStats.Invalid + 1
+        if PendingTargetId then
+            AddToBlacklist(PendingTargetId)
+            PendingTargetId = nil
+        elseif type(errorMessage) == "string" then
+            local failedId = errorMessage:match("%w+-%w+-%w+-%w+-%w+")
+            if failedId then AddToBlacklist(failedId) end
+        end
+        SavePersistentData(true)
+        UpdateUI("TP Failed: " .. tostring(teleportResult.Name))
+    end
+end))
+
+getgenv().SrvHopThread = task.spawn(function()
+    local hasRestoredCache = LoadPersistentData()
+    SavePersistentData(true)
+
+    if hasRestoredCache and #ServerPool > 0 then
+        if PageParsedAt > 0 and (workspace:GetServerTimeNow() - PageParsedAt) > Config.PageExpireTime then
+            UpdateUI("Restored page expired (>1h). Resetting...")
+            ResetCycle()
+            SavePersistentData(true)
+        else
+            ProcessCurrentPool()
+        end
+    end
+
+    while IsRunning do
+        while not getgenv().SrvHop and IsRunning do task.wait(0.5) end
+
+        if #ServerPool == 0 then
+            if SessionStats.Parsed == 0 and CurrentPage == 1 and NextCursor == "" then
+                if FetchPage() and #ServerPool > 0 then
+                    ProcessCurrentPool()
+                end
+
+            elseif NextCursor ~= "" then
+                CurrentPage = CurrentPage + 1
+                task.wait(Config.ApiCooldown)
+                if FetchPage() and #ServerPool > 0 then
+                    ProcessCurrentPool()
+                end
+
+            else
+                UpdateUI("Full cycle complete. Resetting to Page 1...")
+                ResetCycle()
+                SavePersistentData(true)
+                task.wait(Config.ApiCooldown)
+                FetchPage()
+            end
+        else
+            ProcessCurrentPool()
+            task.wait(0.1)
+        end
+    end
+end)
